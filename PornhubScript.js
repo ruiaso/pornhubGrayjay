@@ -1,2235 +1,1413 @@
-const URL_BASE = "https://www.pornhub.com";
-
+const BASE_URL = "https://spankbang.com";
+const PLATFORM = "SpankBang";
 const PLATFORM_CLAIMTYPE = 3;
 
-const PLATFORM = "PornHub";
-
 var config = {};
-var state = {
-	token: "",
-	sessionCookie: ""
+let localConfig = {};
+
+const CONFIG = {
+    DEFAULT_PAGE_SIZE: 20,
+    COMMENTS_PAGE_SIZE: 50,
+    VIDEO_QUALITIES: {
+        "240": { name: "240p", width: 320, height: 240 },
+        "320": { name: "320p", width: 480, height: 320 },
+        "360": { name: "360p", width: 640, height: 360 },
+        "480": { name: "480p", width: 854, height: 480 },
+        "720": { name: "720p", width: 1280, height: 720 },
+        "1080": { name: "1080p", width: 1920, height: 1080 },
+        "2160": { name: "4K", width: 3840, height: 2160 },
+        "4k": { name: "4K", width: 3840, height: 2160 }
+    },
+    INTERNAL_URL_SCHEME: "spankbang://profile/",
+    EXTERNAL_URL_BASE: "https://spankbang.com",
+    SEARCH_FILTERS: {
+        DURATION: {
+            ANY: "",
+            SHORT: "1",
+            MEDIUM: "2", 
+            LONG: "3"
+        },
+        QUALITY: {
+            ANY: "",
+            HD: "1",
+            FHD: "2",
+            UHD: "3"
+        },
+        PERIOD: {
+            ANY: "",
+            TODAY: "1",
+            WEEK: "2",
+            MONTH: "3",
+            YEAR: "4"
+        },
+        ORDER: {
+            RELEVANCE: "",
+            NEW: "1",
+            TRENDING: "2",
+            POPULAR: "3",
+            VIEWS: "4",
+            RATING: "5",
+            LENGTH: "6"
+        }
+    }
 };
 
-// headers (including cookie by default, since it's used for each session later)
-var headers = {
-	"Cookie": "platform=pc; accessAgeDisclaimerPH=2",
-	"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0",
-	"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-	"Accept-Language": "en-US,en;q=0.5",
-	"Cache-Control": "no-cache",
-	"Upgrade-Insecure-Requests": "1"
+const API_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5"
 };
 
-/**
- * Build a query
- * @param {{[key: string]: any}} params Query params
- * @returns {String} Query string
- */
-function buildQuery(params) {
-	let query = "";
-	let first = true;
-	for (const [key, value] of Object.entries(params)) {
-		if (value) {
-			if (first) {
-				first = false;
-			} else {
-				query += "&";
-			}
-
-			query += `${key}=${value}`;
-		}
-	}
-
-	return (query && query.length > 0) ? `?${query}` : ""; 
-}
-
-
-//Source Methods
-source.enable = function (conf, settings, savedStateStr) {
-	config = conf ?? {};
-
-	if (savedStateStr) {
-		try {
-			state = JSON.parse(savedStateStr);
-			log("State loaded: token=" + (state.token ? "present" : "empty"));
-		} catch (e) {
-			log("Failed to parse saved state: " + e);
-		}
-	}
+const REGEX_PATTERNS = {
+    urls: {
+        videoStandard: /^https?:\/\/(?:www\.)?spankbang\.com\/([a-zA-Z0-9]+)\/video\/.+$/,
+        videoAlternative: /^https?:\/\/(?:www\.)?spankbang\.com\/([a-zA-Z0-9]+)\/embed\/.+$/,
+        videoShort: /^https?:\/\/(?:www\.)?spankbang\.com\/([a-zA-Z0-9]+)\/.*$/,
+        channelProfile: /^https?:\/\/(?:www\.)?spankbang\.com\/profile\/([^\/\?]+)/,
+        channelOfficial: /^https?:\/\/(?:www\.)?spankbang\.com\/([a-z0-9]+)\/channel\/([^\/\?]+)/,
+        channelS: /^https?:\/\/(?:www\.)?spankbang\.com\/s\/([^\/\?]+)/,
+        pornstar: /^https?:\/\/(?:www\.)?spankbang\.com\/pornstar\/([^\/\?]+)/,
+        playlistInternal: /^spankbang:\/\/playlist\/(.+)$/,
+        categoryInternal: /^spankbang:\/\/category\/(.+)$/,
+        channelInternal: /^spankbang:\/\/channel\/(.+)$/,
+        profileInternal: /^spankbang:\/\/profile\/(.+)$/,
+        relativeProfile: /^\/profile\/([^\/\?]+)/,
+        relativeChannel: /^\/([a-z0-9]+)\/channel\/([^\/\?]+)/,
+        relativeS: /^\/s\/([^\/\?]+)/,
+        relativePornstar: /^\/pornstar\/([^\/\?]+)/
+    },
+    extraction: {
+        videoId: /\/([a-zA-Z0-9]+)\/(?:video|embed|play)/,
+        videoIdShort: /spankbang\.com\/([a-zA-Z0-9]+)\//,
+        profileName: /\/(?:profile|s)\/([^\/\?]+)/,
+        pornstarName: /\/pornstar\/([^\/\?]+)/,
+        streamUrl: /stream_url_([0-9]+p)\s*=\s*'([^']+)'/g,
+        m3u8Url: /source\s*src="([^"]+\.m3u8[^"]*)"/,
+        title: /<h1[^>]*title="([^"]+)"/,
+        duration: /itemprop="duration"\s*content="PT(\d+)M(\d+)?S?"/,
+        views: /"interactionCount"\s*:\s*"?(\d+)"?/,
+        uploadDate: /itemprop="uploadDate"\s*content="([^"]+)"/,
+        thumbnail: /itemprop="thumbnailUrl"\s*content="([^"]+)"/,
+        uploader: /class="n"\s*>\s*<a[^>]*href="([^"]+)"[^>]*>([^<]+)</
+    },
+    parsing: {
+        duration: /(\d+)h|(\d+)m|(\d+)s/g,
+        htmlTags: /<[^>]*>/g,
+        htmlBreaks: /<br\s*\/?>/gi
+    }
 };
 
-source.saveState = function() {
-	return JSON.stringify(state);
-};
-
-source.getHome = function () {
-	return getVideoPager('/video', {}, 1);
-};
-
-
-
-source.searchSuggestions = function(query) {
-	if(query.length < 1) return [];
-
-	try {
-		// Build autocomplete API URL
-		var apiUrl = URL_BASE + "/api/v1/video/search_autocomplete?pornstars=true&token=" + state.token + "&orientation=straight&q=" + encodeURIComponent(query) + "&alt=0";
-		log("Fetching autocomplete: " + apiUrl);
-
-		// Use httpGET with options object
-		var json = httpGET(apiUrl, {
-			headers: {
-				"Cookie": headers["Cookie"],
-				"User-Agent": headers["User-Agent"],
-				"Accept": "*/*",
-				"Accept-Language": "en-US,en;q=0.5",
-				"Referer": URL_BASE + "/",
-				"X-Requested-With": "XMLHttpRequest",
-				"Content-Type": "application/x-www-form-urlencoded"
-			},
-			requireToken: true,
-			parseJson: true,
-			retries: 3
-		});
-
-		if (!json || json.length === 0) {
-			log("Empty autocomplete JSON");
-			return [];
-		}
-
-		var suggestions = [];
-
-		// Add query suggestions
-		if (json.queries && Array.isArray(json.queries)) {
-			suggestions = suggestions.concat(json.queries);
-		}
-
-		// Add model names (prefixed with @)
-		if (json.models && Array.isArray(json.models)) {
-			json.models.forEach(function(model) {
-				suggestions.push("@" + model.name);
-			});
-		}
-
-		// Add pornstar names (prefixed with @)
-		if (json.pornstars && Array.isArray(json.pornstars)) {
-			json.pornstars.forEach(function(pornstar) {
-				suggestions.push("@" + pornstar.name);
-			});
-		}
-
-		// Add channel names (prefixed with #)
-		if (json.channels && Array.isArray(json.channels)) {
-			json.channels.forEach(function(channel) {
-				suggestions.push("#" + channel.name);
-			});
-		}
-
-		log("Autocomplete returned " + suggestions.length + " total suggestions");
-		return suggestions;
-	} catch(e) {
-		log("Search suggestions failed: " + e);
-		return [];
-	}
-};
-
-source.getSearchCapabilities = () => {
-	return {
-		types: [Type.Feed.Mixed],
-		sorts: [Type.Order.Chronological],
-		filters: []
-	};
-};
-
-source.search = function (query, type, order, filters) {
-	//let sort = order;
-	//if (sort === Type.Order.Chronological) {
-	//	sort = "-publishedAt";
-	//}
-//
-	//const params = {
-	//	search: query,
-	//	sort
-	//};
-//
-	//if (type == Type.Feed.Streams) {
-	//	params.isLive = true;
-	//} else if (type == Type.Feed.Videos) {
-	//	params.isLive = false;
-	//}
-
-	return getVideoPager("/video/search", {search: query}, 1);
-};
-
-source.getSearchChannelContentsCapabilities = function () {
-	return {
-		types: [Type.Feed.Mixed],
-		sorts: [Type.Order.Chronological],
-		filters: []
-	};
-};
-
-source.searchChannelContents = function (channelUrl, query, type, order, filters) {
-	throw new ScriptException("This is a sample");
-};
-
-source.searchChannels = function (query) {
-	return getAutocompleteChannelPager(query);
-};
-
-
-source.isChannelUrl = function (url) {
-	return (url.includes(".pornhub.com/model/") || url.includes(".pornhub.com/channels/") || url.includes(".pornhub.com/pornstar/") ||
-			url.includes("/model/") || url.includes("/channels/") || url.includes("/pornstar/"));
-};
-
-source.getChannel = function (url) {
-	if (!url.startsWith("htt")) {
-		url = URL_BASE + url;
-	}
-
-	// Normalize the URL to remove country-specific subdomains
-	url = normalizePornhubUrl(url);
-
-	var channelUrlName = url.split("/")[4]
-
-	var info;
-	if(url.includes("/channels/")) {
-		info = getChannelInfo(url);
-	} else {
-		info = getPornstarInfo(url);
-	}
-
-    return new PlatformChannel({
-        id: new PlatformID(PLATFORM, channelUrlName, config.id, PLATFORM_CLAIMTYPE),
-        name: info.channelName,
-        thumbnail: info.channelThumbnail,
-        banner: info.channelBanner,
-        subscribers: info.channelSubscribers,
-        description: info.channelDescription,
-        url: info.channelUrl,
-        links: info.channelLinks
-    })
-}
-
-
-
-source.getChannelContents = function (url, type, order, filters) {
-	// Normalize the URL to remove country-specific subdomains
-	url = normalizePornhubUrl(url);
-
-	// channels have different format than model/pornstar
-	if(url.includes("/channels/")) {
-		return getChannelVideosPager(url + "/videos", {}, 1);
-	} else if(url.includes("/model/")){
-		return getModelVideosPager(url + "/videos", {}, 1);
-	} else {
-		return getPornstarVideosPager(url + "/videos/upload", {}, 1);
-	}
-};
-
-
-source.isContentDetailsUrl = function(url) {
-	return url.includes(".pornhub.com/view_video.php?viewkey=") || url.includes("/view_video.php?viewkey=");
-};
-
-const supportedResolutions = {
-	'1080': { width: 1920, height: 1080 },
-	'720': { width: 1280, height: 720 },
-	'480': { width: 854, height: 480 },
-	'360': { width: 640, height: 360 },
-	'240': { width: 352, height: 240 },
-	'144': { width: 256, height: 144 }
-};
-
-
-
-source.getContentDetails = function (url) {
-	var html = httpGET(url, {});
-
-	let flashvarsMatch = html.match(/var\s+flashvars_\d+\s*=\s*({.+?});/);
-
-	let flashvars = {};
-	if (flashvarsMatch) {
-		flashvars = JSON.parse(flashvarsMatch[1]);
-	}
-
-	var mediaDefinitions = flashvars["mediaDefinitions"];
-	var sources = [];
-
-
-	for (const mediaDefinition of mediaDefinitions) {
-		if(typeof mediaDefinition.defaultQuality === "boolean") {
-			if(typeof mediaDefinition.quality === "object") continue;
-			let width = supportedResolutions[`${mediaDefinition.quality}`].width;
-			let height = supportedResolutions[`${mediaDefinition.quality}`].height;
-			sources.push(new HLSSource({
-				name: `${width}x${height}`,
-				width: width,
-				height: height,
-				url: mediaDefinition.videoUrl,
-				duration: flashvars.video_duration ?? 0,
-				priority: true
-			}));
-		} else if(typeof mediaDefinition.defaultQuality === "number") {
-			// doesn't work for now
-			// sources.push(new VideoUrlSource({
-			// 	name: "mp4",
-			// 	url: mediaDefinition.videoUrl,
-			// 	width: supportedResolutions[mediaDefinition.defaultQuality].width,
-			// 	height: supportedResolutions[mediaDefinition.defaultQuality].height,
-			// 	duration: flashvars.video_duration,
-			// 	container: "video/mp4"
-			// }));
-		} else {
-			continue;
-		}
-	}
-
-
-	var dom = domParser.parseFromString(html);
-
-	var ldJson = JSON.parse(dom.querySelector('script[type="application/ld+json"]').text)
-
-	var description = ldJson.description;
-
-	var userAvatar = dom.getElementsByClassName("userAvatar")[0].querySelector("img").getAttribute("src")
-
-	var userInfoNode = dom.getElementsByClassName("userInfo")[0];
-
-	var channelUrlId = userInfoNode.querySelector("div.usernameWrap a").getAttribute("href")[2]
-	
-	var subscribersStr = userInfoNode.querySelectorAll("span")[2].text;
-	var subscribers = parseStringWithKorMSuffixes(subscribersStr);
-	var displayName = userInfoNode.querySelector("a").text;
-	var channelUrl = userInfoNode.querySelector("a").getAttribute("href");
-
-
-	var views = parseInt(ldJson.interactionStatistic[0].userInteractionCount.replace(/,/g, ""))
-
-	var videoId = flashvars.playbackTracking.video_id.toString();
-
-	// note: subtitles are in https://www.pornhub.com/video/caption?id={videoId}&language_id=1&caption_type=0 if present
- 
-	const details = new PlatformVideoDetails({
-		id: new PlatformID(PLATFORM, videoId, config.id),
-		name: flashvars.video_title,
-		thumbnails: new Thumbnails([new Thumbnail(flashvars.image_url, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, channelUrlId, config.id),
-			displayName,
-			channelUrl,
-			userAvatar ?? "",
-			subscribers ?? ""),
-		datetime: Math.round((new Date(ldJson.uploadDate)).getTime() / 1000),
-		duration: flashvars.video_duration,
-		viewCount: views,
-		url: flashvars.link_url,
-		isLive: false,
-		description: description,
-		video: new VideoSourceDescriptor(sources),
-		//subtitles: subtitles
-	});
-
-    details.getContentRecommendations = function () {
-        return source.getContentRecommendations(url);
-    };
-
-	return details;
-};
-
-// Get content recommendations based on a video URL
-source.getContentRecommendations = function(url) {
-	var html = httpGET(url, {});
-	var dom = domParser.parseFromString(html);
-
-	// Find all li.pcVideoListItem in the page (these are related videos)
-	var liElements = dom.querySelectorAll("li.pcVideoListItem");
-
-	if (liElements.length === 0) {
-		log("No recommendations found");
-		return new ContentPager([], false);
-	}
-
-	var resultArray = [];
-
-	liElements.forEach(function (li) {
-		const videoId = li.getAttribute("data-video-id");
-		if (videoId && !isNaN(videoId)) {
-			const aElement = li.querySelector('a.thumbnailTitle, a[href*="view_video"]');
-			if (aElement) {
-				const videoUrl = aElement.getAttribute('href');
-				const imgElement = li.querySelector('img');
-				if (imgElement && videoUrl) {
-					const thumbnailUrl = imgElement.getAttribute('src') || imgElement.getAttribute('data-src') || imgElement.getAttribute('data-thumb_url');
-					const title = aElement.getAttribute("title") || aElement.textContent.trim() || imgElement.getAttribute("alt");
-					const durationVar = li.querySelector(".duration, var.duration");
-					const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
-					const duration = parseDuration(durationStr);
-					const viewsSpan = li.querySelector(".views var, .views");
-					const viewsStr = viewsSpan ? viewsSpan.textContent.trim() : "0";
-					const views = viewsStr && viewsStr.includes("K") || viewsStr.includes("M") ? parseNumberSuffix(viewsStr) : 0;
-
-					const authorLink = li.querySelector(".usernameWrap a, a[href*='/model/'], a[href*='/pornstar/'], a[href*='/channels/']");
-					let authorInfo = {
-						channel: "",
-						authorName: ""
-					};
-					if (authorLink) {
-						authorInfo.channel = URL_BASE + authorLink.getAttribute("href");
-						authorInfo.authorName = authorLink.textContent.trim();
-					}
-
-					resultArray.push(new PlatformVideo({
-						id: new PlatformID(PLATFORM, videoId, config.id),
-						name: title ?? "",
-						thumbnails: new Thumbnails([new Thumbnail(thumbnailUrl, 0)]),
-						author: new PlatformAuthorLink(new PlatformID(PLATFORM, authorInfo.authorName, config.id),
-							authorInfo.authorName,
-							authorInfo.channel,
-							""),
-						datetime: undefined,
-						duration: duration,
-						viewCount: views,
-						url: videoUrl.startsWith("http") ? videoUrl : URL_BASE + videoUrl,
-						isLive: false
-					}));
-				}
-			}
-		}
-	});
-
-	log(`Found ${resultArray.length} recommendations`);
-	return new ContentPager(resultArray, false);
-};
-
-// Get shorts from the /shorties/ page
-source.getShorts = function(context) {
-	// Parse context
-	var from = 1;
-	var count = 12;
-
-	if (typeof context === 'string') {
-		try {
-			const parsed = JSON.parse(context);
-			from = parsed.from ?? 1;
-			count = parsed.count ?? 12;
-		} catch (e) {
-			// Use defaults
-		}
-	} else if (context) {
-		from = context.from ?? 1;
-		count = context.count ?? 12;
-	}
-
-	return getShortsPager(from, count);
-};
-
-function getShortsPager(from, count) {
-	log(`getShortsPager from=${from} count=${count}`);
-
-	// PornHub's /shorties page returns random shorts on each visit
-	// Not paginated - each fetch gets a fresh random set
-	const url = URL_BASE + "/shorties";
-
-	var html = httpGET(url, {});
-
-	// Extract JSON_SHORTIES from the JavaScript in the HTML
-	// Pattern can be either:
-	// 1. JSON_SHORTIES = insertAfterNthPosition([...]);
-	// 2. if (SHOW_SHORTIES_ADS) { JSON_SHORTIES = insertAfterNthPosition([...]); }
-
-	// Find the line that assigns JSON_SHORTIES
-	var startIdx = html.indexOf('JSON_SHORTIES = insertAfterNthPosition([');
-	if (startIdx === -1) {
-		log("No JSON_SHORTIES assignment found in page");
-		return new PornhubVideoPager([], false, "/shorties", {}, 1);
-	}
-
-	// Extract the JSON array - find the matching closing bracket and semicolon
-	var arrayStart = html.indexOf('[', startIdx);
-	var bracketCount = 0;
-	var arrayEnd = -1;
-	var inString = false;
-	var escapeNext = false;
-
-	for (var i = arrayStart; i < html.length; i++) {
-		var char = html[i];
-
-		if (escapeNext) {
-			escapeNext = false;
-			continue;
-		}
-
-		if (char === '\\') {
-			escapeNext = true;
-			continue;
-		}
-
-		if (char === '"' && !escapeNext) {
-			inString = !inString;
-			continue;
-		}
-
-		if (inString) continue;
-
-		if (char === '[') {
-			bracketCount++;
-		} else if (char === ']') {
-			bracketCount--;
-			if (bracketCount === 0) {
-				arrayEnd = i + 1;
-				break;
-			}
-		}
-	}
-
-	if (arrayEnd === -1) {
-		log("Could not find end of JSON_SHORTIES array");
-		return new PornhubVideoPager([], false, "/shorties", {}, 1);
-	}
-
-	var jsonString = html.substring(arrayStart, arrayEnd);
-	if (!jsonString) {
-		log("No JSON_SHORTIES data extracted");
-		return new PornhubVideoPager([], false, "/shorties", {}, 1);
-	}
-
-	var shortsData;
-	try {
-		shortsData = JSON.parse(jsonString);
-	} catch (e) {
-		log("Failed to parse JSON_SHORTIES: " + e);
-		return new PornhubVideoPager([], false, "/shorties", {}, 1);
-	}
-
-	if (!shortsData || shortsData.length === 0) {
-		log("No shorts data found");
-		return new PornhubVideoPager([], false, "/shorties", {}, 1);
-	}
-
-	var resultArray = [];
-
-	shortsData.forEach(function (short) {
-		if (!short.videoId) return;
-
-		const videoId = short.videoId.toString();
-		const title = short.videoTitle || "";
-		const thumbnailUrl = short.imageUrl || "";
-		const videoUrl = short.linkUrl || "";
-		const authorName = short.name || "";
-		const authorUrl = short.profileUrl || "";
-
-		// Calculate duration from mediaDefinitions if available
-		var duration = 0;
-		if (short.trackingTimeWatched && short.trackingTimeWatched.video_duration) {
-			duration = short.trackingTimeWatched.video_duration;
-		}
-
-		// Parse likes as views (shorties don't have view count)
-		var views = 0;
-		if (short.likeInfo) {
-			const likeStr = short.likeInfo.toString();
-			if (likeStr.includes("K") || likeStr.includes("M")) {
-				views = parseNumberSuffix(likeStr);
-			} else {
-				views = parseInt(likeStr) || 0;
-			}
-		}
-
-		// Extract video sources from mediaDefinitions
-		var sources = [];
-		if (short.mediaDefinitions && Array.isArray(short.mediaDefinitions)) {
-			short.mediaDefinitions.forEach(function (mediaDefinition) {
-				if (mediaDefinition.format === "hls" && mediaDefinition.videoUrl) {
-					var quality = mediaDefinition.quality;
-					var resolution = supportedResolutions[quality];
-					if (resolution) {
-						sources.push(new HLSSource({
-							name: quality + "p",
-							width: resolution.width,
-							height: resolution.height,
-							url: mediaDefinition.videoUrl,
-							duration: duration,
-							priority: mediaDefinition.defaultQuality === true
-						}));
-					}
-				}
-			});
-		}
-
-		// If we have sources, return PlatformVideoDetails (playable)
-		// If no sources, return PlatformVideo (metadata only)
-		if (sources.length > 0) {
-			resultArray.push(new PlatformVideoDetails({
-				id: new PlatformID(PLATFORM, videoId, config.id),
-				name: title ?? "",
-				thumbnails: new Thumbnails([new Thumbnail(thumbnailUrl, 0)]),
-				author: new PlatformAuthorLink(new PlatformID(PLATFORM, authorName, config.id),
-					authorName,
-					authorUrl,
-					""),
-				datetime: undefined,
-				duration: duration,
-				viewCount: views,
-				url: videoUrl.startsWith("http") ? videoUrl : URL_BASE + videoUrl,
-				isLive: false,
-				isShort: true,
-				description: "",
-				video: new VideoSourceDescriptor(sources),
-				rating: new RatingLikes(parseInt(short.likeNumber) || 0)
-			}));
-		} else {
-			// No sources available, return metadata only
-			resultArray.push(new PlatformVideo({
-				id: new PlatformID(PLATFORM, videoId, config.id),
-				name: title ?? "",
-				thumbnails: new Thumbnails([new Thumbnail(thumbnailUrl, 0)]),
-				author: new PlatformAuthorLink(new PlatformID(PLATFORM, authorName, config.id),
-					authorName,
-					authorUrl,
-					""),
-				datetime: undefined,
-				duration: duration,
-				viewCount: views,
-				url: videoUrl.startsWith("http") ? videoUrl : URL_BASE + videoUrl,
-				isLive: false,
-				isShort: true
-			}));
-		}
-	});
-
-	log(`Found ${resultArray.length} shorts`);
-
-	// Always hasMore=true since each fetch returns new random shorts
-	var hasMore = resultArray.length > 0;
-
-	return new PornhubVideoPager(resultArray, hasMore, "/shorties", {}, 1);
-}
-
-
-
-/**
- * Detect if the HTML response is a bot detection challenge page
- * @param {string} html - The HTML response body
- * @returns {boolean} - True if it's a challenge page
- */
-function isBotChallenge(html) {
-	return html.includes("function leastFactor(n)") && html.includes("document.cookie=\"KEY=");
-}
-
-/**
- * Solve PornHub's bot detection challenge using eval()
- * @param {string} html - The challenge page HTML
- * @returns {string|null} - The KEY cookie value, or null if solving failed
- */
-function solveBotChallenge(html) {
-	try {
-		log("Solving bot detection challenge...");
-
-		// Extract the JavaScript challenge code
-		var scriptStart = html.indexOf("<script type=\"text/javascript\">");
-		var scriptEnd = html.indexOf("</script>", scriptStart);
-		if (scriptStart === -1 || scriptEnd === -1) {
-			log("Could not find script tags in challenge");
-			return null;
-		}
-
-		var scriptContent = html.substring(scriptStart + 31, scriptEnd);
-
-		// Remove HTML comments (<!-- and -->)
-		scriptContent = scriptContent.replace(/<!--/g, "").replace(/-->/g, "");
-
-		// Replace document.cookie assignment with a return statement
-		// Original: document.cookie="KEY="+n+"*"+p/n+":"+s+":2234595840:1;path=/;";
-		// We want to capture: n+"*"+p/n+":"+s+":2234595840:1"
-		scriptContent = scriptContent.replace(
-			/document\.cookie\s*=\s*"KEY="\s*\+\s*([^;]+);/,
-			'return $1;'
-		);
-
-		// Remove document.location.reload
-		scriptContent = scriptContent.replace(/document\.location\.reload\([^)]*\);?/g, "");
-
-		// Wrap in a function that calls go() and returns the result
-		var solverCode = scriptContent + "\nreturn go();";
-
-		log("Executing challenge code...");
-
-		// Execute the challenge using eval
-		var keyCookieValue = eval("(function() { " + solverCode + " })()");
-
-		if (keyCookieValue) {
-			log("Challenge solved: KEY=" + keyCookieValue.substring(0, 20) + "...");
-			return keyCookieValue;
-		} else {
-			log("Challenge execution returned no value");
-			return null;
-		}
-	} catch (e) {
-		log("Failed to solve bot challenge: " + e);
-		return null;
-	}
-}
-
-// the only things you need for a valid session are as follows:
-// 1.) token
-// 2.) cookies: __l, __s, and ss
-// this will allow you to get search suggestions!!
-function refreshSession() {
-	const resp = http.GET(URL_BASE, headers);
-	if (!resp.isOk)
-		throw new ScriptException("Failed request [" + URL_BASE + "] (" + resp.code + ")");
-	else {
-		var dom = domParser.parseFromString(resp.body);
-
-		// Extract token from search input
-		const searchInput = dom.querySelector("#searchInput");
-		if (searchInput) {
-			state.token = searchInput.getAttribute("data-token");
-			log("Token extracted: " + (state.token ? state.token.substring(0, 20) + "..." : "null"));
-		} else {
-			log("Warning: #searchInput not found, token extraction failed");
-		}
-
-		// Extract session ID from meta tag
-		var sessionId = "";
-		const metaTag = dom.querySelector("meta[name=\"adsbytrafficjunkycontext\"]");
-		if (metaTag) {
-			const adContextInfo = metaTag.getAttribute("data-info");
-			sessionId = JSON.parse(adContextInfo)["session_id"];
-			state.sessionCookie = sessionId;
-			log("Session ID extracted: ss=" + sessionId.substring(0, 10) + "...");
-		} else {
-			log("Warning: meta tag not found, session ID extraction failed");
-		}
-
-		// Extract cookies from response headers
-		// The __l and __s cookies are essential for autocomplete to work
-		var cookiesFromHeaders = [];
-		log("Response headers available: " + (resp.headers ? "yes" : "no"));
-		if (resp.headers) {
-			log("Headers keys: " + Object.keys(resp.headers).join(", "));
-			if (resp.headers["set-cookie"]) {
-				var setCookieHeaders = resp.headers["set-cookie"];
-				log("set-cookie header found, type: " + typeof setCookieHeaders);
-				if (typeof setCookieHeaders === 'string') {
-					setCookieHeaders = [setCookieHeaders];
-				}
-
-				for (var i = 0; i < setCookieHeaders.length; i++) {
-					var cookieHeader = setCookieHeaders[i];
-					// Extract cookie name and value (format: "name=value; path=/; ...")
-					var cookieParts = cookieHeader.split(';')[0].trim();
-					cookiesFromHeaders.push(cookieParts);
-					log("Extracted cookie: " + cookieParts);
-				}
-			} else {
-				log("No set-cookie header found");
-			}
-		}
-
-		// Build the complete cookie string
-		// Start with required cookies
-		var cookieString = "platform=pc; accessAgeDisclaimerPH=2";
-
-		// Add cookies from response headers (__l, __s, etc.)
-		for (var i = 0; i < cookiesFromHeaders.length; i++) {
-			cookieString += "; " + cookiesFromHeaders[i];
-		}
-
-		// Add session ID if we got one from meta tag
-		if (sessionId) {
-			cookieString += "; ss=" + sessionId;
-		}
-
-		headers["Cookie"] = cookieString;
-		log("Session refreshed - token: " + (state.token ? "present" : "empty") + ", cookies set: " + cookiesFromHeaders.length);
-	}
-}
-
-function getVideoId(dom) {
-	var videoId =  dom.querySelector("div#player").getAttribute("data-video-id");
-	return videoId
-}
-
-source.getComments = function (url) {
-	var html = httpGET(url, {});
-	var dom = domParser.parseFromString(html);
-	var videoId = getVideoId(dom);
-
-	return getCommentPager(`/comment/show?id=${videoId}&popular=0&what=video&token=${state.token}`, {}, 1);
-}
-
-source.getSubComments = function (comment) {
-	throw new ScriptException("This is a sample");
-}
-
-function parseStringWithKorMSuffixes(subscriberString) {
-    const numericPart = parseFloat(subscriberString);
-
-    if (subscriberString.includes("K")) {
-        return Math.floor(numericPart * 1000);
-    } else if (subscriberString.includes("M")) {
-        return Math.floor(numericPart * 1000000);
-    } else {
-        return Math.floor(numericPart);
+function makeRequest(url, headers = API_HEADERS, context = 'request') {
+    try {
+        const response = http.GET(url, headers, false);
+        if (!response.isOk) {
+            throw new ScriptException(`${context} failed with status ${response.code}`);
+        }
+        return response.body;
+    } catch (error) {
+        throw new ScriptException(`Failed to fetch ${context}: ${error.message}`);
     }
 }
 
-
-
-
-function getCommentPager(path, params, page) {
-	log(`getCommentPager page=${page}`, params)
-
-	const count = 10;
-	const page_end = (page ?? 1) * count;
-	params = { ... params, page }
-
-	const url = URL_BASE + path;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-
-	// Comment API requires a valid token in the URL path
-	var html = httpGET(urlWithParams, { requireToken: true });
-
-	var comments = getComments(html);
-	// if no comments, return empty page
-	if (comments.total === 0) return new PornhubCommentPager();
-	
-	return new PornhubCommentPager(comments.comments.map(c => {
-		return new Comment({
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, c.username, config.id), 
-				c.username, 
-				"", 
-				c.avatar,
-				"",),
-			message: c.message,
-			rating: new RatingLikesDislikes(c.voteUp, c.voteDown),
-			date: Math.round(c.date.getTime() / 1000),
-			replyCount: c.totalReplies,
-			context: { id: c.id }
-		});
-	}), comments.total > page_end, path, params, page);
-}
-
-
-
-
-function getComments(html) {
-
-	var dom = domParser.parseFromString(html);
-
-	var comments = []
-
-	const total = parseInt(dom.querySelector("div#cmtWrapper div.cmtHeader h2 span").textContent.trim().replace("(", "").replace(")", ""));
-	if (total > 0) {
-		// Loop through each comment block
-		// todo nested blocks
-		dom.querySelectorAll('div#cmtContent div.commentBlock').forEach(commentBlock => {
-			const id = commentBlock.getAttribute("class").match(/commentTag(\d+)/)[1];
-
-			const avatar = commentBlock.querySelector("img").getAttribute("src");
-			const username = commentBlock.querySelector('.usernameLink').textContent.trim();
-			const date = parseRelativeDate(commentBlock.querySelector('div.date').textContent.trim());
-			const message = commentBlock.querySelector('.commentMessage span').textContent.trim();
-			const voteUp = parseInt(commentBlock.querySelector('span.voteTotal').textContent.trim());
-			var isVoteDownPresent = commentBlock.querySelectorAll('div.actionButtonsBlock span') !== null;
-
-			var voteDown = 0;
-			if (isVoteDownPresent) {
-				voteDown = parseInt(commentBlock.querySelectorAll('div.actionButtonsBlock span')[1].textContent.trim());
-			}
-
-			// Push comment details to the comments array
-			comments.push({
-				id,
-				avatar,
-				username,
-				date,
-				message,
-				voteUp,
-				voteDown
-			});
-		});
-
-
-		return {
-			total: total,
-			comments: comments
-		};
-
-	} else {
-
-		return {
-			total: 0,
-			comments: 0
-		};
-	}
-
-}
-
-
-/**
- * Normalize PornHub URL by removing country-specific subdomains
- * @param {string} url - The URL to normalize
- * @returns {string} - Normalized URL with www.pornhub.com
- */
-function normalizePornhubUrl(url) {
-	if (!url) return url;
-
-	// Replace any country-specific subdomain (rt.pornhub.com, de.pornhub.com, etc.) with www.pornhub.com
-	// Also handles urls without subdomain (pornhub.com -> www.pornhub.com)
-	return url.replace(/https?:\/\/([a-z]{2}\.)?pornhub\.com/, "https://www.pornhub.com");
-}
-
-/**
- * Extract platform name from URL
- * @param {string} url - The URL to extract platform from
- * @param {string} label - Optional label from the page
- * @returns {string} - Platform name or "Website"
- */
-function extractPlatformName(url, label) {
-	try {
-		// If label is provided and meaningful, use it
-		if (label && label !== "") {
-			return label;
-		}
-
-		// Extract domain from URL
-		var domain = url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].toLowerCase();
-
-		// Map of domain patterns to friendly names
-		var platformMap = {
-			'twitter.com': 'Twitter',
-			'x.com': 'Twitter',
-			'instagram.com': 'Instagram',
-			'tiktok.com': 'TikTok',
-			'youtube.com': 'YouTube'
-		};
-
-		// Check if domain matches any known platform
-		for (var pattern in platformMap) {
-			if (domain.includes(pattern)) {
-				return platformMap[pattern];
-			}
-		}
-
-		// For unknown domains, capitalize the first part of the domain
-		var domainParts = domain.split('.');
-		if (domainParts.length > 0) {
-			var name = domainParts[0];
-			return name.charAt(0).toUpperCase() + name.slice(1);
-		}
-
-		return "Website";
-	} catch (e) {
-		return "Website";
-	}
-}
-
-function parseRelativeDate(relativeDate) {
-    const now = new Date();
-    const lowerCaseRelativeDate = relativeDate.toLowerCase();
-
-    if (lowerCaseRelativeDate.includes('1 second ago')) {
-        return new Date(now - 1000);
-    } else if (lowerCaseRelativeDate.includes('1 minute ago')) {
-        return new Date(now - 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('1 hour ago')) {
-        return new Date(now - 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('1 day ago')) {
-        return new Date(now - 24 * 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('yesterday')) {
-        return new Date(now - 24 * 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('1 week ago')) {
-        return new Date(now - 7 * 24 * 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('1 month ago')) {
-        const oneMonthAgo = new Date(now);
-        oneMonthAgo.setMonth(now.getMonth() - 1);
-        return oneMonthAgo;
-    } else if (lowerCaseRelativeDate.includes('1 year ago')) {
-        const oneYearAgo = new Date(now);
-        oneYearAgo.setFullYear(now.getFullYear() - 1);
-        return oneYearAgo;
-    } else if (lowerCaseRelativeDate.includes('seconds ago')) {
-        const secondsAgo = parseInt(lowerCaseRelativeDate);
-        return new Date(now - secondsAgo * 1000);
-    } else if (lowerCaseRelativeDate.includes('minutes ago')) {
-        const minutesAgo = parseInt(lowerCaseRelativeDate);
-        return new Date(now - minutesAgo * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('hours ago')) {
-        const hoursAgo = parseInt(lowerCaseRelativeDate);
-        return new Date(now - hoursAgo * 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('days ago')) {
-        const daysAgo = parseInt(lowerCaseRelativeDate);
-        return new Date(now - daysAgo * 24 * 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('weeks ago')) {
-        const weeksAgo = parseInt(lowerCaseRelativeDate);
-        return new Date(now - weeksAgo * 7 * 24 * 60 * 60 * 1000);
-    } else if (lowerCaseRelativeDate.includes('months ago')) {
-        const monthsAgo = parseInt(lowerCaseRelativeDate);
-        const oneMonthAgo = new Date(now);
-        oneMonthAgo.setMonth(now.getMonth() - monthsAgo);
-        return oneMonthAgo;
-    } else if (lowerCaseRelativeDate.includes('years ago')) {
-        const yearsAgo = parseInt(lowerCaseRelativeDate);
-        const oneYearAgo = new Date(now);
-        oneYearAgo.setFullYear(now.getFullYear() - yearsAgo);
-        return oneYearAgo;
+function extractVideoId(url) {
+    if (!url || typeof url !== 'string') {
+        throw new ScriptException("Invalid URL provided for video ID extraction");
     }
 
-	// Handle additional cases or return null if the format is not recognized
-    return 0;
-}
-
-
-function getChannelInfo(url) {
-	var html = httpGET(url, {});
-	let dom = domParser.parseFromString(html);
-
-	const avatarElement = dom.getElementById("getAvatar");
-	var channelThumbnail = avatarElement ? avatarElement.getAttribute("src") : "";
-
-	const bannerElement = dom.getElementById("coverPictureDefault");
-	var channelBanner = bannerElement ? bannerElement.getAttribute("src") : "";
-
-	const nameElement = dom.querySelector("h1");
-	var channelName = nameElement ? nameElement.textContent.trim() : "";
-
-	var statsNode = dom.getElementById("stats");
-
-	var channelSubscribers = (statsNode && statsNode.childNodes[1]) ? parseInt(statsNode.childNodes[1].textContent.trim().replace(/,/g, '')) : 0;
-	var channelViews = (statsNode && statsNode.childNodes[0]) ? parseInt(statsNode.childNodes[0].textContent.trim().replace(/,/g, '')) : 0;
-	var channelVideos = (statsNode && statsNode.childNodes[2]) ? parseInt(statsNode.childNodes[2].textContent.trim().split(" ")[0].replace(/,/g, '')) : 0;
-
-	const descElement = dom.querySelector(".cdescriptions");
-	var channelDescription = (descElement && descElement.childNodes[0]) ? descElement.childNodes[0].textContent.trim() : "";
-
-	// Add channel stats to description
-	if (channelViews > 0 || channelVideos > 0 || channelSubscribers > 0) {
-		channelDescription += "\n\n📊 Channel Stats:";
-		if (channelVideos > 0) {
-			channelDescription += "\n• Total Videos: " + channelVideos.toLocaleString();
-		}
-		if (channelViews > 0) {
-			channelDescription += "\n• Total Views: " + channelViews.toLocaleString();
-		}
-		if (channelSubscribers > 0) {
-			channelDescription += "\n• Subscribers: " + channelSubscribers.toLocaleString();
-		}
-	}
-
-	// Extract social media links
-	var channelLinks = {};
-	var socialLinksSection = dom.querySelector(".socialLinksSection, section.socialLinksSection");
-	if (socialLinksSection) {
-		var socialLinks = socialLinksSection.querySelectorAll("ul.socialList li a");
-		socialLinks.forEach(function(link) {
-			var href = link.getAttribute("href");
-			if (href && !href.includes("pornhub.com")) {
-				var linkText = link.querySelector(".socialText");
-				var label = linkText ? linkText.textContent.trim() : "";
-
-				// Extract platform name from URL domain
-				var platformName = extractPlatformName(href, label);
-
-				// Use the label if available, otherwise use the extracted platform name
-				var linkLabel = label || platformName;
-
-				if (linkLabel) {
-					channelLinks[linkLabel] = href;
-				}
-			}
-		});
-	}
-
-	return {
-		channelName: channelName,
-		channelThumbnail: channelThumbnail,
-		channelBanner: channelBanner,
-		channelSubscribers: channelSubscribers,
-		channelDescription: channelDescription,
-		channelUrl: normalizePornhubUrl(url),
-		channelLinks: channelLinks
-	}
-}
-
-
-
-function getPornstarInfo(url) {
-	var html = httpGET(url, {});
-	let dom = domParser.parseFromString(html);
-
-	const avatarElement = dom.getElementById("getAvatar");
-	const channelThumbnail = avatarElement ? avatarElement.getAttribute("src") : "";
-
-	const bannerElement = dom.getElementById("coverPictureDefault");
-	const channelBanner = bannerElement ? bannerElement.getAttribute("src") : "";
-
-	const nameElement = dom.querySelector("div.name > h1");
-	const channelName = nameElement ? nameElement.textContent.trim() : "";
-
-	var channelDescription;
-	const channelDescriptionElement = dom.querySelector("section.aboutMeSection > div:not([class])")
-	if(!channelDescriptionElement) {
-		channelDescription = "";
-	} else {
-		channelDescription = channelDescriptionElement.textContent;
-	}
-
-	const statsNode = dom.querySelector("div.infoBoxes");
-	const channelSubscribers = statsNode ? parseNumberSuffix(statsNode.querySelector("div[data-title^=Subscribers] > span.big").textContent.trim()) : 0;
-	const channelViews = statsNode ? parseNumberSuffix(statsNode.querySelector("div[data-title^=Video] > span.big").textContent.trim()) : 0;
-
-	// Try to get video count from the stats node
-	var channelVideos = 0;
-	const videoCountElement = dom.querySelector("div.pornstarVideosCounter span.big, div.videosCounter span");
-	if (videoCountElement) {
-		const videoCountText = videoCountElement.textContent.trim();
-		channelVideos = videoCountText.includes("K") || videoCountText.includes("M") ? parseNumberSuffix(videoCountText) : parseInt(videoCountText.replace(/,/g, '')) || 0;
-	}
-
-	// Add channel stats to description
-	if (channelViews > 0 || channelVideos > 0 || channelSubscribers > 0) {
-		channelDescription += "\n\n📊 Channel Stats:";
-		if (channelVideos > 0) {
-			channelDescription += "\n• Total Videos: " + channelVideos.toLocaleString();
-		}
-		if (channelViews > 0) {
-			channelDescription += "\n• Total Views: " + channelViews.toLocaleString();
-		}
-		if (channelSubscribers > 0) {
-			channelDescription += "\n• Subscribers: " + channelSubscribers.toLocaleString();
-		}
-	}
-
-	// Extract social media links
-	var channelLinks = {};
-	var socialLinksSection = dom.querySelector(".socialLinksSection, section.socialLinksSection");
-	if (socialLinksSection) {
-		var socialLinks = socialLinksSection.querySelectorAll("ul.socialList li a");
-		socialLinks.forEach(function(link) {
-			var href = link.getAttribute("href");
-			if (href && !href.includes("pornhub.com")) {
-				var linkText = link.querySelector(".socialText");
-				var label = linkText ? linkText.textContent.trim() : "";
-
-				// Extract platform name from URL domain
-				var platformName = extractPlatformName(href, label);
-
-				// Use the label if available, otherwise use the extracted platform name
-				var linkLabel = label || platformName;
-
-				if (linkLabel) {
-					channelLinks[linkLabel] = href;
-				}
-			}
-		});
-	}
-
-	return {
-		channelName: channelName,
-		channelThumbnail: channelThumbnail,
-		channelBanner: channelBanner,
-		channelSubscribers: channelSubscribers,
-		channelDescription: channelDescription,
-		channelUrl: normalizePornhubUrl(url),
-		channelLinks: channelLinks
-	}
-}
-
-
-
-
-class PornhubVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params,  page});
-	}
-
-	nextPage() {
-		// For shorts, call getShortsPager to get fresh random shorts
-		if (this.context.path === "/shorties") {
-			return getShortsPager(0, 12);
-		}
-		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
-	}
-}
-
-
-class PornhubChannelVideosPager extends VideoPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params,  page});
-	}
-
-	nextPage() {
-		if(this.context.path.includes("/channels/")) {
-			return getChannelVideosPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
-		} else if(this.context.path.includes("/model/")) {
-			return getModelVideosPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
-		}
-		else {
-			return getPornstarVideosPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
-		}
-	}
-}
-
-
-
-class PornhubChannelPager extends ChannelPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params, page });
-	}
-	
-	nextPage() {
-		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
-	}
-}
-
-
-class PornhubCommentPager extends CommentPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params, page });
-	}
-
-	nextPage() {
-		return getCommentPager(this.context.path, this.context.params, (this.context.page ?? 1) + 1);
-	}
-}
-
-// Multi-channel pager for combined pornstars/models/channels search
-class PornhubMultiChannelPager extends ChannelPager {
-	constructor(results, hasMore, query, page) {
-		super(results, hasMore, { query, page });
-	}
-
-	nextPage() {
-		return getMultiChannelPager(this.context.query, (this.context.page ?? 1) + 1);
-	}
-}
-
-// Use autocomplete API for channel search (no bot detection, no pagination issues!)
-function getAutocompleteChannelPager(query) {
-	try {
-		// Build autocomplete API URL
-		var apiUrl = URL_BASE + "/api/v1/video/search_autocomplete?pornstars=true&token=" + state.token + "&orientation=straight&q=" + encodeURIComponent(query) + "&alt=0";
-		log("Fetching channel search from autocomplete: " + apiUrl);
-
-		// Use httpGET with options object
-		var json = httpGET(apiUrl, {
-			headers: {
-				"Cookie": headers["Cookie"],
-				"User-Agent": headers["User-Agent"],
-				"Accept": "*/*",
-				"Accept-Language": "en-US,en;q=0.5",
-				"Referer": URL_BASE + "/",
-				"X-Requested-With": "XMLHttpRequest",
-				"Content-Type": "application/x-www-form-urlencoded"
-			},
-			requireToken: true,
-			parseJson: true,
-			retries: 3
-		});
-
-		var allChannels = [];
-
-		// Add models
-		if (json.models && Array.isArray(json.models)) {
-			json.models.forEach(function(model) {
-				allChannels.push(new PlatformAuthorLink(
-					new PlatformID(PLATFORM, model.slug, config.id),
-					model.name,
-					URL_BASE + "/model/" + model.slug,
-					"", // No avatar in autocomplete API
-					0   // No subscribers in autocomplete API
-				));
-			});
-			log(`Found ${json.models.length} models`);
-		}
-
-		// Add pornstars
-		if (json.pornstars && Array.isArray(json.pornstars)) {
-			json.pornstars.forEach(function(pornstar) {
-				allChannels.push(new PlatformAuthorLink(
-					new PlatformID(PLATFORM, pornstar.slug, config.id),
-					pornstar.name,
-					URL_BASE + "/pornstar/" + pornstar.slug,
-					"", // No avatar in autocomplete API
-					0   // No subscribers in autocomplete API
-				));
-			});
-			log(`Found ${json.pornstars.length} pornstars`);
-		}
-
-		// Add channels
-		if (json.channels && Array.isArray(json.channels)) {
-			json.channels.forEach(function(channel) {
-				allChannels.push(new PlatformAuthorLink(
-					new PlatformID(PLATFORM, channel.slug, config.id),
-					channel.name,
-					URL_BASE + "/channels/" + channel.slug,
-					"", // No avatar in autocomplete API
-					0   // No subscribers in autocomplete API
-				));
-			});
-			log(`Found ${json.channels.length} channels`);
-		}
-
-		log(`Found ${allChannels.length} total creators from autocomplete`);
-
-		// Autocomplete doesn't support pagination, so hasMore is always false
-		return new PornhubMultiChannelPager(allChannels, false, query, 1);
-	} catch(e) {
-		log("Channel search failed: " + e);
-		return new PornhubMultiChannelPager([], false, query, 1);
-	}
-}
-
-// Search both pornstars and channels (OLD METHOD - using HTML scraping with bot detection)
-function getMultiChannelPager(query, page) {
-	log(`getMultiChannelPager query=${query} page=${page}`);
-
-	var allChannels = [];
-	var hasMore = false;
-
-	// Search pornstars
-	try {
-		var pornstarHtml = httpGET(URL_BASE + "/pornstars/search?search=" + encodeURIComponent(query) + "&page=" + page, {});
-		var pornstars = getPornstarsFromSearch(pornstarHtml);
-		allChannels = allChannels.concat(pornstars.channels);
-		hasMore = hasMore || pornstars.hasNextPage;
-		log(`Found ${pornstars.channels.length} pornstars`);
-	} catch(e) {
-		log("Failed to search pornstars: " + e);
-	}
-
-	// Search channels
-	try {
-		var channelHtml = httpGET(URL_BASE + "/channels/search?channelSearch=" + encodeURIComponent(query) + "&page=" + page, {});
-		var channels = getChannels(channelHtml);
-		allChannels = allChannels.concat(channels.channels);
-		hasMore = hasMore || channels.hasNextPage;
-		log(`Found ${channels.channels.length} channels`);
-	} catch(e) {
-		log("Failed to search channels: " + e);
-	}
-
-	log(`Found ${allChannels.length} total creators`);
-
-	return new PornhubMultiChannelPager(allChannels.map(c => {
-		return new PlatformAuthorLink(new PlatformID(PLATFORM, c.name, config.id),
-			c.displayName,
-			URL_BASE + c.url,
-			c.avatar ?? "",
-			c.subscribers);
-	}), hasMore, query, page);
-}
-
-// Parse pornstars from search results
-function getPornstarsFromSearch(html) {
-	var dom = domParser.parseFromString(html);
-	var resultArray = [];
-
-	// Try multiple possible selectors for pornstar search results
-	var pornstarElements = dom.querySelectorAll("div.pornstarsSearchResult li, ul.pornstars-list li, li.pornstar-item, div.performerCard");
-
-	if (pornstarElements.length === 0) {
-		log("No pornstar elements found with standard selectors");
-		return { hasNextPage: false, channels: [] };
-	}
-
-	pornstarElements.forEach(function(li) {
-		var linkElement = li.querySelector("a");
-		if (!linkElement) return;
-
-		var url = linkElement.getAttribute("href");
-		if (!url || !url.includes("/pornstar/")) return;
-
-		var imgElement = li.querySelector("img");
-		var avatar = imgElement ? (imgElement.getAttribute("data-src") || imgElement.getAttribute("src") || "") : "";
-
-		// Try different selectors for name
-		var nameElement = li.querySelector(".pornStarName, .performerCardName, .title");
-		var displayName = nameElement ? nameElement.textContent.trim() : "";
-		if (!displayName && linkElement.getAttribute("title")) {
-			displayName = linkElement.getAttribute("title");
-		}
-
-		// Try different selectors for subscriber count
-		var rankElement = li.querySelector(".rank_number, .subscribers, .subscribersText");
-		var subscribers = 0;
-		if (rankElement) {
-			var subsText = rankElement.textContent.trim();
-			subscribers = subsText.includes("K") || subsText.includes("M") ? parseNumberSuffix(subsText) : parseInt(subsText) || 0;
-		}
-
-		var name = url ? url.split("/").filter(s => s).pop() : displayName;
-
-		if (url && displayName) {
-			resultArray.push({
-				subscribers: subscribers,
-				name: name,
-				url: url,
-				displayName: displayName,
-				avatar: avatar
-			});
-		}
-	});
-
-	var hasNextPage = false;
-	var pageNextNode = dom.querySelector("li.page_next a, a.page-next, .pagination a.next");
-	if (pageNextNode && pageNextNode.getAttribute("href") && pageNextNode.getAttribute("href") !== "") {
-		hasNextPage = true;
-	}
-
-	log(`getPornstarsFromSearch: Found ${resultArray.length} pornstars`);
-
-	return {
-		hasNextPage: hasNextPage,
-		channels: resultArray
-	};
-}
-
-
-function getChannelPager(path, params, page) {
-
-	log(`getChannelPager page=${page}`, params)
-
-	const count = 40;
-	const page_end = (page ?? 1) * count;
-	params = { ... params, page }
-
-	const url = URL_BASE + path;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-
-	var html = httpGET(urlWithParams, {});
-
-	var channels = getChannels(html, "searchChannelsSection");
-
-
-	return new PornhubChannelPager(channels.channels.map(c => {
-			return new PlatformAuthorLink(new PlatformID(PLATFORM, c.name, config.id), 
-				c.displayName, 
-				URL_BASE + c.url, 
-				c.avatar ?? "",
-				c.subscribers);
-		}), channels.hasNextPage, path, params, page);
-}
-
-function getChannels(html) {
-
-	var dom = domParser.parseFromString(html);
-
-	var resultArray = []
-
-	dom.getElementById("searchChannelsSection").childNodes.forEach((li) => {
-
-			var avatar = li.querySelector("div.avatar a.usernameLink img").getAttribute("src");
-			var displayName = li.querySelector("div.descriptionContainer li a.usernameLink").textContent.trim()
-			var url = li.querySelector("div.descriptionContainer li a.usernameLink").getAttribute("href");
-			var subscribers = parseInt(li.querySelector("div.descriptionContainer li span").textContent.trim().replace(/\,/, ""));
-			var name = url.split("/")[1];
-
-			resultArray.push({
-				subscribers: subscribers,
-				name: name,
-				url: url,
-				displayName: displayName,
-				avatar: avatar,
-			});
-	});
-	
-
-	var hasNextPage = false; 
-	var pageNextNode = dom.getElementsByClassName("page_next");
-	if (pageNextNode.length > 0) {
-		hasNextPage = pageNextNode[0].firstChild.getAttribute("href") == "" ? false : true;
-	}
-
-	return {
-		hasNextPage: hasNextPage,
-		channels: resultArray
-	};
-}
-
-// todo: maybe improve?
-function getChannelVideosPager(path, params, page) {
-	log(`getChannelVideosPager page=${page}`, params)
-
-	const count = 36;
-	const page_end = (page ?? 1) * count;
-	params = { ... params, page }
-
-	const url = path;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-
-	var html = httpGET(urlWithParams, {});
-
-	// Use getVideos() with class selector since channel pages use the same structure as regular video pages
-	var dom = domParser.parseFromString(html);
-
-	// Try specific IDs first (these are guaranteed to have videos)
-	var ulElement = dom.getElementById("mostRecentVideosSection") || dom.getElementById("moreData");
-
-	// If no ID found, try querySelectorAll and find first non-empty ul
-	if (!ulElement) {
-		var ulElements = dom.querySelectorAll("ul.full-row-thumbs.videos, ul.videos.full-row-thumbs");
-		for (var i = 0; i < ulElements.length; i++) {
-			var testUl = ulElements[i];
-			if (testUl.querySelectorAll("li.pcVideoListItem").length > 0) {
-				ulElement = testUl;
-				break;
-			}
-		}
-	}
-
-	if (!ulElement) {
-		log("Warning: Could not find ul.full-row-thumbs.videos, trying old getChannelContents method");
-		var vids = getChannelContents(html);
-		return _buildPornhubChannelVideosPager(vids, vids.totalElemsPages > page_end, path, params, page);
-	}
-
-	// Parse videos using the same logic as getVideos but adapted for channel pages
-	var resultArray = [];
-	var authorName = path.split("/")[4]; // Extract channel name from path
-	var authorInfo = {
-		authorName: authorName,
-		avatar: ""
-	};
-
-	ulElement.querySelectorAll("li.pcVideoListItem").forEach(function (li) {
-		const videoId = li.getAttribute("data-video-id");
-		if (videoId && !isNaN(videoId)) {
-			const aElement = li.querySelector('a.js-linkVideoThumb');
-			if (aElement) {
-				const videoUrl = aElement.getAttribute('href');
-				const imgElement = aElement.querySelector('img.js-videoThumb');
-				if (imgElement && videoUrl) {
-					const thumbnailUrl = imgElement.getAttribute('src');
-					const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
-					const durationVar = aElement.querySelector(".duration");
-					const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
-					const duration = parseDuration(durationStr);
-					const viewsSpan = li.querySelector(".views var");
-					const viewsStr = viewsSpan ? viewsSpan.textContent.trim() : "0";
-					const views = parseNumberSuffix(viewsStr);
-
-					resultArray.push({
-						id: videoId,
-						videoUrl: videoUrl,
-						title: title,
-						thumbnailUrl: thumbnailUrl,
-						duration: duration,
-						authorInfo: authorInfo,
-						views: views,
-					});
-				}
-			}
-		}
-	});
-
-	var vids = {
-		videos: resultArray,
-		totalElemsPages: resultArray.length
-	};
-	return _buildPornhubChannelVideosPager(vids, resultArray.length >= count, path, params, page);
-}
-
-function getModelVideosPager(path, params, page) {
-	log(`getModelVideosPager page=${page}`, params)
-	params = { ... params, page }
-
-	const url = path;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-
-	var html = httpGET(urlWithParams, {});
-
-	// Try new structure first (same as regular video pages)
-	var dom = domParser.parseFromString(html);
-
-	// Try specific IDs first (these are guaranteed to have videos)
-	var ulElement = dom.getElementById("mostRecentVideosSection") || dom.getElementById("moreData");
-
-	// If no ID found, try querySelectorAll and find first non-empty ul
-	if (!ulElement) {
-		var ulElements = dom.querySelectorAll("ul.full-row-thumbs.videos, ul.videos.full-row-thumbs");
-		for (var i = 0; i < ulElements.length; i++) {
-			var testUl = ulElements[i];
-			if (testUl.querySelectorAll("li.pcVideoListItem").length > 0) {
-				ulElement = testUl;
-				break;
-			}
-		}
-	}
-
-	if (ulElement) {
-		log("Using new ul.full-row-thumbs.videos structure for model page");
-		var resultArray = [];
-		var authorName = path.split("/")[4]; // Extract model name from path
-		var authorInfo = {
-			authorName: authorName,
-			avatar: ""
-		};
-
-		const count = 40;
-		ulElement.querySelectorAll("li.pcVideoListItem").forEach(function (li) {
-			const videoId = li.getAttribute("data-video-id");
-			if (videoId && !isNaN(videoId)) {
-				const aElement = li.querySelector('a.js-linkVideoThumb');
-				if (aElement) {
-					const videoUrl = aElement.getAttribute('href');
-					const imgElement = aElement.querySelector('img.js-videoThumb');
-					if (imgElement && videoUrl) {
-						const thumbnailUrl = imgElement.getAttribute('src');
-						const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
-						const durationVar = aElement.querySelector(".duration");
-						const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
-						const duration = parseDuration(durationStr);
-						const viewsSpan = li.querySelector(".views var");
-						const viewsStr = viewsSpan ? viewsSpan.textContent.trim() : "0";
-						const views = parseNumberSuffix(viewsStr);
-
-						resultArray.push({
-							id: videoId,
-							videoUrl: videoUrl,
-							title: title,
-							thumbnailUrl: thumbnailUrl,
-							duration: duration,
-							authorInfo: authorInfo,
-							views: views,
-						});
-					}
-				}
-			}
-		});
-
-		var vids = {
-			videos: resultArray,
-			hasNextPage: resultArray.length >= count
-		};
-		return _buildPornhubChannelVideosPager(vids, vids.hasNextPage, path, params, page);
-	}
-
-	// Fallback to old structure
-	log("Using old getModelContents structure for model page");
-	var vids = getModelContents(html);
-	return _buildPornhubChannelVideosPager(vids, vids.hasNextPage, path, params, page)
-}
-
-function getPornstarVideosPager(path, params, page) {
-	log(`getPornstarVideosPager page=${page}`, params)
-
-	const count = 40;
-	const page_end = (page ?? 1) * count;
-	params = { ... params, page }
-
-	const url = path;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-
-	var html = httpGET(urlWithParams, {});
-
-	// Try new structure first (same as regular video pages)
-	var dom = domParser.parseFromString(html);
-
-	// Try specific IDs first (these are guaranteed to have videos)
-	var ulElement = dom.getElementById("mostRecentVideosSection") || dom.getElementById("moreData");
-
-	// If no ID found, try querySelectorAll and find first non-empty ul
-	if (!ulElement) {
-		var ulElements = dom.querySelectorAll("ul.full-row-thumbs.videos, ul.videos.full-row-thumbs");
-		for (var i = 0; i < ulElements.length; i++) {
-			var testUl = ulElements[i];
-			if (testUl.querySelectorAll("li.pcVideoListItem").length > 0) {
-				ulElement = testUl;
-				break;
-			}
-		}
-	}
-
-	if (ulElement) {
-		log("Using new ul.full-row-thumbs.videos structure for pornstar page");
-		var resultArray = [];
-		var authorName = path.split("/")[4]; // Extract pornstar name from path
-		var authorInfo = {
-			authorName: authorName,
-			avatar: ""
-		};
-
-		ulElement.querySelectorAll("li.pcVideoListItem").forEach(function (li) {
-			const videoId = li.getAttribute("data-video-id");
-			if (videoId && !isNaN(videoId)) {
-				const aElement = li.querySelector('a.js-linkVideoThumb');
-				if (aElement) {
-					const videoUrl = aElement.getAttribute('href');
-					const imgElement = aElement.querySelector('img.js-videoThumb');
-					if (imgElement && videoUrl) {
-						const thumbnailUrl = imgElement.getAttribute('src');
-						const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
-						const durationVar = aElement.querySelector(".duration");
-						const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
-						const duration = parseDuration(durationStr);
-						const viewsSpan = li.querySelector(".views var");
-						const viewsStr = viewsSpan ? viewsSpan.textContent.trim() : "0";
-						const views = parseNumberSuffix(viewsStr);
-
-						resultArray.push({
-							id: videoId,
-							videoUrl: videoUrl,
-							title: title,
-							thumbnailUrl: thumbnailUrl,
-							duration: duration,
-							authorInfo: authorInfo,
-							views: views,
-						});
-					}
-				}
-			}
-		});
-
-		var vids = {
-			videos: resultArray,
-			totalElemsPages: resultArray.length
-		};
-		return _buildPornhubChannelVideosPager(vids, resultArray.length >= count, path, params, page);
-	}
-
-	// Fallback to old structure
-	log("Using old getPornstarContents structure for pornstar page");
-	var vids = getPornstarContents(html);
-	return _buildPornhubChannelVideosPager(vids, vids.totalElemsPages > page_end, path, params, page)
-}
-
-function _buildPornhubChannelVideosPager(vids, hasNextPage, path, params, page) {
-	// Extract the channel URL from the path (remove /videos or /videos/upload suffix)
-	var channelUrl = path.replace(/\/videos.*$/, '');
-
-	return new PornhubChannelVideosPager(vids.videos.map(v => {
-		return new PlatformVideo({
-			id: new PlatformID(PLATFORM, v.id, config.id),
-			name: v.title ?? "",
-			thumbnails: new Thumbnails([new Thumbnail(v.thumbnailUrl, 0)]),
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, v.authorInfo.authorName, config.id),
-				v.authorInfo.authorName,
-				channelUrl,
-				v.authorInfo.avatar),
-			datetime: undefined,
-			duration: v.duration,
-			viewCount: v.views,
-			url: URL_BASE + v.videoUrl,
-			isLive: false
-		});
-
-	}), hasNextPage, path, params, page);
-}
-
-
-function getChannelContents(html) {
-	var dom = domParser.parseFromString(html);
-
-	var statsNodes = dom.querySelectorAll("div#stats div.info.floatRight");
-
-	var total = (statsNodes && statsNodes[2]) ? parseInt(statsNodes[2].textContent.split(" VIDEOS")[0]) : 0;
-
-	var resultArray = []
-
-	const nameElement = dom.querySelector("div.title h1");
-	const avatarElement = dom.querySelector("img#getAvatar");
-
-	var authorInfo = {
-		authorName: nameElement ? nameElement.textContent.trim() : "",
-		avatar: avatarElement ? avatarElement.getAttribute("href") : ""
-	}
-
-	const videosContainer = dom.getElementById("showAllChanelVideos");
-	if (!videosContainer) return { totalElemsPages: total, videos: resultArray };
-
-	videosContainer.childNodes.forEach((li) => {
-		if (!li) return;
-
-		const titleElement = li.querySelector("span.title a");
-		if (!titleElement) return;
-
-		var title = titleElement.textContent.trim();
-		var videoUrl = titleElement.getAttribute("href");
-		if (!videoUrl) return;
-
-		const imgElement = li.querySelector("img");
-		var thumbnailUrl = imgElement ? imgElement.getAttribute("src") : "";
-
-		var videoId = li.getAttribute("data-video-id");
-		if (!videoId) return;
-
-		const durationElement = li.querySelector("var.duration");
-		var duration = durationElement ? parseDuration(durationElement.textContent.trim()) : 0;
-
-		const viewsElement = li.querySelector("div.videoDetailsBlock span.views var");
-		var views = viewsElement ? parseStringWithKorMSuffixes(viewsElement.textContent.trim()) : 0;
-
-		resultArray.push({
-			id: videoId,
-			videoUrl: videoUrl,
-			title: title,
-			thumbnailUrl: thumbnailUrl,
-			duration: duration,
-			authorInfo: authorInfo,
-			views: views,
-		});
-
-	});
-
-	return {
-		totalElemsPages: total,
-		videos: resultArray
-	};
-}
-
-function getPornstarContents(html) {
-	var dom = domParser.parseFromString(html);
-
-	// "Showing 1-40 of 52"
-	const showingInfoElement = dom.querySelector("div.showingInfo");
-	var total = 0;
-	if (showingInfoElement) {
-		var showingInfo = showingInfoElement.textContent.trim();
-		if (showingInfo.length > 0 && showingInfo.includes(" of ")) {
-			// "52"
-			total = parseInt(showingInfo.split(" of ").slice(-1), 10);
-		}
-	}
-
-	var resultArray = []
-
-	const nameElement = dom.querySelector("h1[itemprop=name]");
-	const avatarElement = dom.querySelector("img#getAvatar");
-
-	var authorInfo = {
-		authorName: nameElement ? nameElement.textContent.trim() : "",
-		avatar: avatarElement ? avatarElement.getAttribute("src") : ""
-	}
-
-	const videoListContainer = dom.querySelector("div.videoUList > ul");
-	if (!videoListContainer) return { totalElemsPages: total, videos: resultArray };
-
-	videoListContainer.childNodes.forEach((li) => {
-		if (!li) return;
-
-		const titleElement = li.querySelector("span.title a");
-		if (!titleElement) return;
-
-		var title = titleElement.textContent.trim();
-		var videoUrl = titleElement.getAttribute("href");
-		if (!videoUrl) return;
-
-		const imgElement = li.querySelector("img");
-		var thumbnailUrl = imgElement ? imgElement.getAttribute("src") : "";
-
-		var videoId = li.getAttribute("data-video-id");
-		if (!videoId) return;
-
-		const durationElement = li.querySelector("var.duration");
-		var duration = durationElement ? parseDuration(durationElement.textContent.trim()) : 0;
-
-		const viewsElement = li.querySelector("div.videoDetailsBlock span.views var");
-		var views = viewsElement ? parseStringWithKorMSuffixes(viewsElement.textContent.trim()) : 0;
-
-		resultArray.push({
-			id: videoId,
-			videoUrl: videoUrl,
-			title: title,
-			thumbnailUrl: thumbnailUrl,
-			duration: duration,
-			authorInfo: authorInfo,
-			views: views,
-		});
-
-	});
-
-	return {
-		totalElemsPages: total,
-		videos: resultArray
-	};
-}
-
-function getModelContents(html) {
-	var dom = domParser.parseFromString(html);
-	var hasNextPage;
-
-	const pageNext = dom.querySelector("li.page_next > a");
-	if (pageNext) {
-		hasNextPage = pageNext.getAttribute("href") !== "";
-	} else {
-		hasNextPage = false;
-	}
-
-	var resultArray = []
-
-	const nameElement = dom.querySelector("h1[itemprop=name]");
-	const avatarElement = dom.querySelector("img#getAvatar");
-
-	var authorInfo = {
-		authorName: nameElement ? nameElement.textContent.trim() : "",
-		avatar: avatarElement ? avatarElement.getAttribute("src") : ""
-	}
-
-	const videoListContainer = dom.querySelector("div.videoUList > ul");
-	if (!videoListContainer) return { hasNextPage: hasNextPage, videos: resultArray };
-
-	videoListContainer.childNodes.forEach((li) => {
-		if (!li) return;
-
-		const titleElement = li.querySelector("span.title a");
-		if (!titleElement) return;
-
-		var title = titleElement.textContent.trim();
-		var videoUrl = titleElement.getAttribute("href");
-		if (!videoUrl) return;
-
-		const imgElement = li.querySelector("img");
-		var thumbnailUrl = imgElement ? imgElement.getAttribute("src") : "";
-
-		var videoId = li.getAttribute("data-video-id");
-		if (!videoId) return;
-
-		const durationElement = li.querySelector("var.duration");
-		var duration = durationElement ? parseDuration(durationElement.textContent.trim()) : 0;
-
-		const viewsElement = li.querySelector("div.videoDetailsBlock span.views var");
-		var views = viewsElement ? parseStringWithKorMSuffixes(viewsElement.textContent.trim()) : 0;
-
-		resultArray.push({
-			id: videoId,
-			videoUrl: videoUrl,
-			title: title,
-			thumbnailUrl: thumbnailUrl,
-			duration: duration,
-			authorInfo: authorInfo,
-			views: views,
-		});
-
-	});
-
-	return {
-		hasNextPage: hasNextPage,
-		videos: resultArray
-	};
-}
-
-function getVideoPager(path, params, page) {
-	log(`getVideoPager page=${page}`, params)
-	params = { ... params, page }
-
-	const url = URL_BASE + path;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-
-	var html = httpGET(urlWithParams, {});
-
-	// Use different container IDs based on the path
-	// Search pages use "videoSearchResult", home/category pages use "videoCategory"
-	var containerId = path.includes("/search") ? "videoSearchResult" : "videoCategory";
-	var vids = getVideos(html, containerId);
-	
-	return new PornhubVideoPager(vids.videos.map(v => {
-		return new PlatformVideo({
-			id: new PlatformID(PLATFORM, v.id, config.id),
-			name: v.title ?? "",
-			thumbnails: new Thumbnails([new Thumbnail(v.thumbnailUrl, 0)]),
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, v.authorInfo.authorName, config.id),
-				v.authorInfo.authorName,
-				v.authorInfo.channel),
-			datetime: undefined,
-			duration: v.duration,
-			viewCount: v.views,
-			url: v.videoUrl,
-			isLive: false
-		});
-
-	}), true, path, params, page);
-}
-
-
-function getVideos(html, ulId) {
-
-	let node = domParser.parseFromString(html, "text/html");
-	
-	// Find the ul element with id ulId
-	var ulElement = node.getElementById(ulId);
-
-	var total = 1;
-
-	var pagingIndicationElement = node.getElementsByClassName("showingCounter")[0];
-	if (pagingIndicationElement !== undefined && pagingIndicationElement !== null) {
-		var pagingIndication = pagingIndicationElement.textContent.trim();
-		if (pagingIndication && typeof pagingIndication === 'string') {
-			var indexOfTotalStr = pagingIndication.indexOf("of "); // "showing XX-ZZ of TOTAL"
-			if (indexOfTotalStr !== -1) {
-				total = parseInt(pagingIndication.substring(indexOfTotalStr + 3), 10);
-				log(`getVideos total: ${total}`);
-			}
-		}
-	}
-
-	var resultArray = []
-
-    if (ulElement) {
-        // Get all li elements inside the ul with class "pcVideoListItem" (new class)
-        const liElements = ulElement.querySelectorAll("li.pcVideoListItem");
-
-        log(`getVideos found ${liElements.length} li elements`);
-
-        // Iterate through each li element
-        liElements.forEach(function (li) {
-            // Get the data-video-id attribute of the li element for the videoId
-            const videoId = li.getAttribute("data-video-id");
-
-            // Ensure a valid videoId is found and it's not the ad element (which might have no data-video-id or a non-numeric id)
-            if (videoId && !isNaN(videoId)) {
-                // Find the first <a> tag inside the li which is the video link
-                const aElement = li.querySelector('a.js-linkVideoThumb');
-
-                if (aElement) {
-                    // Get the "href" attribute as "videoUrl"
-                    const videoUrl = URL_BASE + aElement.getAttribute('href');
-
-                    // Find the <img> tag inside the <a>
-                    const imgElement = aElement.querySelector('img.js-videoThumb');
-
-                    if (imgElement) {
-                        // Get the "src" attribute as "thumbnailUrl"
-                        const thumbnailUrl = imgElement.getAttribute('src');
-
-                        // Title can be from the img's alt or data-title, or the a tag's data-title, or the .thumbnailTitle span
-                        const title = imgElement.getAttribute("alt") || imgElement.getAttribute("data-title") || aElement.getAttribute("data-title");
-
-                        // Get the duration string from the <var> tag with class "duration"
-                        const durationVar = aElement.querySelector(".duration");
-                        const durationStr = durationVar ? durationVar.textContent.trim() : "0:00";
-                        const duration = parseDuration(durationStr);
-
-                        // Get the views string from the <var> tag inside the span with class "views"
-                        const viewsSpan = li.querySelector(".views var");
-                        const viewsStr = viewsSpan ? viewsSpan.textContent.trim() : "0";
-                        const views = parseNumberSuffix(viewsStr);
-
-                        // Get author information
-                        const authorLink = li.querySelector(".usernameWrap a");
-                        let authorInfo = {
-                            channel: "",
-                            authorName: ""
-                        };
-                        if (authorLink) {
-                            authorInfo.channel = URL_BASE + authorLink.getAttribute("href");
-                            authorInfo.authorName = authorLink.textContent.trim();
-                        }
-
-                        // Create an object with the desired properties and push it to the result array
-                        resultArray.push({
-                            id: videoId,
-                            videoUrl: videoUrl,
-                            title: title,
-                            thumbnailUrl: thumbnailUrl,
-                            duration: duration,
-                            authorInfo: authorInfo,
-                            views: views,
-                        });
-                    }
-                }
-            }
-        });
+    const patterns = [
+        REGEX_PATTERNS.extraction.videoId,
+        REGEX_PATTERNS.extraction.videoIdShort
+    ];
+
+    for (const pattern of patterns) {
+        const match = url.match(pattern);
+        if (match && match[1]) {
+            return match[1];
+        }
     }
 
-	log(resultArray.length + " videos found");
-
-	return {
-		totalElemsPages: undefined,
-		videos: resultArray
-	};
-
+    throw new ScriptException(`Could not extract video ID from URL: ${url}`);
 }
 
+function extractChannelId(url) {
+    if (!url || typeof url !== 'string') {
+        throw new ScriptException("Invalid URL provided for channel ID extraction");
+    }
 
-/**
- * HTTP GET wrapper that manages session lifecycle, bot detection bypass, and retries
- * Similar to Kick's callUrl function but adapted for PornHub's specific challenges
- * @param {string} url - The URL to fetch
- * @param {Object} options - Request options
- * @param {Object} options.headers - Optional custom headers to use instead of default headers
- * @param {boolean} options.requireToken - Whether this request requires a valid session token (default: false)
- * @param {boolean} options.parseJson - Whether to parse response as JSON (default: false)
- * @param {number} options.retries - Number of retry attempts on failure (default: 3)
- * @returns {string | Object} - Response body as string or parsed JSON
- * @throws {ScriptException}
- */
-function httpGET(url, options = {}) {
-	// Extract options with defaults
-	var customHeaders = options.headers || null;
-	var requireToken = options.requireToken || false;
-	var parseJson = options.parseJson || false;
-	var retries = options.retries !== undefined ? options.retries : 3;
+    const channelInternalMatch = url.match(REGEX_PATTERNS.urls.channelInternal);
+    if (channelInternalMatch && channelInternalMatch[1]) {
+        return { type: 'channel', id: channelInternalMatch[1] };
+    }
 
-	let lastError = null;
-	let attempts = retries + 1; // +1 for the initial attempt
+    const profileInternalMatch = url.match(REGEX_PATTERNS.urls.profileInternal);
+    if (profileInternalMatch && profileInternalMatch[1]) {
+        return { type: 'profile', id: profileInternalMatch[1] };
+    }
 
-	// Use custom headers if provided, otherwise use default headers
-	var requestHeaders = customHeaders || headers;
+    const channelOfficialMatch = url.match(REGEX_PATTERNS.urls.channelOfficial);
+    if (channelOfficialMatch && channelOfficialMatch[1] && channelOfficialMatch[2]) {
+        return { type: 'channel', id: `${channelOfficialMatch[1]}:${channelOfficialMatch[2]}` };
+    }
 
-	while (attempts > 0) {
-		try {
-			// Step 1: Ensure we have a valid session
-			if (headers["Cookie"].length === 0) {
-				log("Session empty, refreshing...");
-				refreshSession();
-				// Update request headers with new cookies if using default headers
-				if (!customHeaders) {
-					requestHeaders = headers;
-				} else {
-					// Update cookie in custom headers
-					customHeaders["Cookie"] = headers["Cookie"];
-					requestHeaders = customHeaders;
-				}
-			} else if (requireToken && state.token === "") {
-				log("Token required but empty, refreshing session...");
-				refreshSession();
-				// Update request headers after session refresh
-				if (!customHeaders) {
-					requestHeaders = headers;
-				} else {
-					customHeaders["Cookie"] = headers["Cookie"];
-					requestHeaders = customHeaders;
-				}
-			}
+    const relativeChannelMatch = url.match(REGEX_PATTERNS.urls.relativeChannel);
+    if (relativeChannelMatch && relativeChannelMatch[1] && relativeChannelMatch[2]) {
+        return { type: 'channel', id: `${relativeChannelMatch[1]}:${relativeChannelMatch[2]}` };
+    }
 
-			// Step 2: Make the HTTP request
-			log("httpGET: Fetching " + url + " (attempt " + (retries - attempts + 2) + "/" + (retries + 1) + ")");
-			const resp = http.GET(url, requestHeaders);
+    const relativePornstarMatch = url.match(REGEX_PATTERNS.urls.relativePornstar);
+    if (relativePornstarMatch && relativePornstarMatch[1]) {
+        return { type: 'pornstar', id: relativePornstarMatch[1] };
+    }
 
-			// Step 3: Check response status
-			if (!resp.isOk) {
-				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-			}
+    const pornstarMatch = url.match(REGEX_PATTERNS.extraction.pornstarName);
+    if (pornstarMatch && pornstarMatch[1]) {
+        return { type: 'pornstar', id: pornstarMatch[1] };
+    }
 
-			var body = resp.body;
+    const channelProfileMatch = url.match(REGEX_PATTERNS.urls.channelProfile);
+    if (channelProfileMatch && channelProfileMatch[1]) {
+        return { type: 'profile', id: channelProfileMatch[1] };
+    }
 
-			// Step 4: Check for bot detection challenge
-			if (isBotChallenge(body)) {
-				log("Bot challenge detected on attempt " + (retries - attempts + 2));
+    const relativeProfileMatch = url.match(REGEX_PATTERNS.urls.relativeProfile);
+    if (relativeProfileMatch && relativeProfileMatch[1]) {
+        return { type: 'profile', id: relativeProfileMatch[1] };
+    }
 
-				// Solve the challenge
-				var keyCookieValue = solveBotChallenge(body);
+    const profileMatch = url.match(REGEX_PATTERNS.extraction.profileName);
+    if (profileMatch && profileMatch[1]) {
+        return { type: 'profile', id: profileMatch[1] };
+    }
 
-				if (!keyCookieValue) {
-					throw new ScriptException("Failed to solve bot challenge");
-				}
-
-				// Update headers with KEY cookie
-				headers["Cookie"] += "; KEY=" + keyCookieValue;
-
-				// Update request headers
-				if (!customHeaders) {
-					requestHeaders = headers;
-				} else {
-					customHeaders["Cookie"] = headers["Cookie"];
-					requestHeaders = customHeaders;
-				}
-
-				log("KEY cookie added, retrying request...");
-
-				// Retry the request with the KEY cookie
-				const retryResp = http.GET(url, requestHeaders);
-
-				if (!retryResp.isOk) {
-					throw new ScriptException("Retry request [" + url + "] failed with code [" + retryResp.code + "]");
-				}
-
-				body = retryResp.body;
-
-				// Verify challenge was bypassed
-				if (isBotChallenge(body)) {
-					throw new ScriptException("Bot challenge persists after solving");
-				}
-
-				log("Bot challenge bypassed successfully");
-			}
-
-			// Step 5: Parse response if requested
-			if (parseJson) {
-				try {
-					var json = JSON.parse(body);
-
-					// Check for API errors
-					if (json.error) {
-						throw new ScriptException("API error: " + json.error);
-					}
-
-					return json;
-				} catch (parseError) {
-					log("Failed to parse JSON: " + parseError);
-					throw new ScriptException("JSON parse error: " + parseError);
-				}
-			}
-
-			// Step 6: Return successful response
-			return body;
-
-		} catch (error) {
-			lastError = error;
-			attempts--;
-
-			log("Request failed: " + error + " (attempts remaining: " + attempts + ")");
-
-			// If we have more attempts and the error is recoverable, try refreshing session
-			if (attempts > 0) {
-				if (error.toString().includes("401") || error.toString().includes("403") ||
-				    error.toString().includes("session") || error.toString().includes("token")) {
-					log("Attempting session refresh before retry...");
-					try {
-						refreshSession();
-						// Update request headers after refresh
-						if (!customHeaders) {
-							requestHeaders = headers;
-						} else {
-							customHeaders["Cookie"] = headers["Cookie"];
-							requestHeaders = customHeaders;
-						}
-					} catch (refreshError) {
-						log("Session refresh failed: " + refreshError);
-					}
-				}
-
-				// Small delay before retry to avoid rate limiting
-				log("Waiting 1 second before retry...");
-				bridge.sleep(1000);
-				continue;
-			}
-
-			// All retry attempts exhausted
-			log("Request failed after " + (retries + 1) + " attempts");
-			throw lastError;
-		}
-	}
-
-	// Should never reach here, but just in case
-	throw lastError || new ScriptException("Request failed for unknown reason");
+    throw new ScriptException(`Could not extract channel ID from URL: ${url}`);
 }
 
-function parseNumberSuffix(numStr) {
-
-	var mul = 1;
-	if (numStr.includes("K")) {
-		mul = 1000;
-	}
-	if (numStr.includes("M")) {
-		mul = 1000000;
-	}
-
-	var out = parseFloat(numStr.slice(0, -1)) * mul;
-	return out;
+function extractProfileId(url) {
+    const result = extractChannelId(url);
+    if (result.type === 'channel') {
+        return `channel:${result.id}`;
+    } else if (result.type === 'pornstar') {
+        return `pornstar:${result.id}`;
+    }
+    return result.id;
 }
 
 function parseDuration(durationStr) {
-	var splitted = durationStr.split(":");
-	var mins = parseInt(splitted[0]);
-	var secs = parseInt(splitted[1]);
+    if (!durationStr) return 0;
 
-	return 60 * mins + secs;
+    let totalSeconds = 0;
+    
+    if (typeof durationStr === 'number') {
+        return durationStr;
+    }
+
+    const colonMatch = durationStr.match(/(\d+):(\d+)(?::(\d+))?/);
+    if (colonMatch) {
+        if (colonMatch[3]) {
+            totalSeconds = parseInt(colonMatch[1]) * 3600 + parseInt(colonMatch[2]) * 60 + parseInt(colonMatch[3]);
+        } else {
+            totalSeconds = parseInt(colonMatch[1]) * 60 + parseInt(colonMatch[2]);
+        }
+        return totalSeconds;
+    }
+
+    const parts = durationStr.toLowerCase().match(REGEX_PATTERNS.parsing.duration);
+    if (parts) {
+        for (const part of parts) {
+            const numericValue = parseInt(part);
+            if (!isNaN(numericValue)) {
+                if (part.includes('h')) {
+                    totalSeconds += numericValue * 3600;
+                } else if (part.includes('m')) {
+                    totalSeconds += numericValue * 60;
+                } else if (part.includes('s')) {
+                    totalSeconds += numericValue;
+                }
+            }
+        }
+    }
+
+    return totalSeconds;
 }
 
-log("LOADED");
+function parseViewCount(viewsStr) {
+    if (!viewsStr) return 0;
+    
+    viewsStr = viewsStr.trim().toLowerCase();
+    
+    const multipliers = {
+        'k': 1000,
+        'm': 1000000,
+        'b': 1000000000
+    };
+    
+    for (const [suffix, multiplier] of Object.entries(multipliers)) {
+        if (viewsStr.includes(suffix)) {
+            const num = parseFloat(viewsStr.replace(/[^0-9.]/g, ''));
+            return Math.floor(num * multiplier);
+        }
+    }
+    
+    return parseInt(viewsStr.replace(/[,.\s]/g, '')) || 0;
+}
+
+function extractAvatarFromHtml(html) {
+    const avatarPatterns = [
+        /src="(https?:\/\/spankbang\.com\/avatar\/[^"]+)"/i,
+        /<img[^>]*src="(\/avatar\/[^"]+)"/i,
+        /\!\[.*?\]\((https?:\/\/spankbang\.com\/avatar\/[^)]+)\)/i
+    ];
+    
+    for (const pattern of avatarPatterns) {
+        const match = html.match(pattern);
+        if (match && match[1]) {
+            return match[1].startsWith('http') ? match[1] : `https://spankbang.com${match[1]}`;
+        }
+    }
+    return "";
+}
+
+function extractUploaderFromHtml(html) {
+    const uploader = {
+        name: "",
+        url: "",
+        avatar: ""
+    };
+    
+    const globalAvatar = extractAvatarFromHtml(html);
+
+    const channelPatterns = [
+        /<a[^>]*href="\/([a-z0-9]+)\/channel\/([^"]+)"[^>]*>([^<]+)<\/a>/i,
+        /href="\/([a-z0-9]+)\/channel\/([^"]+)"[^>]*title="([^"]+)"/i,
+        /class="n"\s*>\s*<a[^>]*href="\/([a-z0-9]+)\/channel\/([^"]+)"[^>]*>([^<]+)</i,
+        /<div[^>]*class="[^"]*info[^"]*"[^>]*>[\s\S]*?<a[^>]*href="\/([a-z0-9]+)\/channel\/([^"]+)"[^>]*>([^<]+)</i
+    ];
+
+    for (const pattern of channelPatterns) {
+        const match = html.match(pattern);
+        if (match) {
+            const shortId = match[1];
+            const channelName = match[2];
+            const displayName = match[3] ? match[3].trim() : channelName.replace(/\+/g, ' ');
+            uploader.name = displayName;
+            uploader.url = `spankbang://channel/${shortId}:${channelName}`;
+            uploader.avatar = globalAvatar || "";
+            return uploader;
+        }
+    }
+
+    const profilePatterns = [
+        /<a[^>]*href="\/profile\/([^"]+)"[^>]*>([^<]+)<\/a>/i,
+        /href="\/profile\/([^"]+)"[^>]*title="([^"]+)"/i,
+        /class="n"\s*>\s*<a[^>]*href="\/profile\/([^"]+)"[^>]*>([^<]+)</i,
+        /<div[^>]*class="[^"]*info[^"]*"[^>]*>[\s\S]*?<a[^>]*href="\/profile\/([^"]+)"[^>]*>([^<]+)</i
+    ];
+
+    for (const pattern of profilePatterns) {
+        const match = html.match(pattern);
+        if (match) {
+            const profileName = match[1];
+            const displayName = match[2] ? match[2].trim() : profileName.replace(/\+/g, ' ');
+            uploader.name = displayName;
+            uploader.url = `spankbang://profile/${profileName}`;
+            uploader.avatar = globalAvatar || "";
+            return uploader;
+        }
+    }
+
+    const pornstarPatterns = [
+        /<a[^>]*href="\/pornstar\/([^"]+)"[^>]*>([^<]+)<\/a>/i,
+        /href="\/pornstar\/([^"]+)"[^>]*title="([^"]+)"/i,
+        /class="n"\s*>\s*<a[^>]*href="\/pornstar\/([^"]+)"[^>]*>([^<]+)</i,
+        /<div[^>]*class="[^"]*info[^"]*"[^>]*>[\s\S]*?<a[^>]*href="\/pornstar\/([^"]+)"[^>]*>([^<]+)</i
+    ];
+
+    for (const pattern of pornstarPatterns) {
+        const match = html.match(pattern);
+        if (match) {
+            const pornstarName = match[1];
+            const displayName = match[2] ? match[2].trim() : pornstarName.replace(/\+/g, ' ');
+            uploader.name = displayName;
+            uploader.url = `spankbang://profile/pornstar:${pornstarName}`;
+            uploader.avatar = globalAvatar || "";
+            return uploader;
+        }
+    }
+
+    return uploader;
+}
+
+function parseVideoPage(html, url) {
+    const videoData = {
+        id: extractVideoId(url),
+        url: url,
+        title: "Unknown Title",
+        description: "",
+        duration: 0,
+        views: 0,
+        uploadDate: 0,
+        thumbnail: "",
+        uploader: { name: "", url: "", avatar: "" },
+        sources: {},
+        rating: 0
+    };
+
+    const titleMatch = html.match(/<h1[^>]*title="([^"]+)"/);
+    if (titleMatch) {
+        videoData.title = cleanVideoTitle(titleMatch[1]);
+    } else {
+        const altTitleMatch = html.match(/<title>([^<]+)<\/title>/);
+        if (altTitleMatch) {
+            videoData.title = cleanVideoTitle(altTitleMatch[1].replace(/ - SpankBang$/, '').trim());
+        }
+    }
+
+    const descPatterns = [
+        /<meta\s+name="description"\s+content="([^"]+)"/i,
+        /<div[^>]*class="[^"]*description[^"]*"[^>]*>([\s\S]*?)<\/div>/i
+    ];
+    for (const pattern of descPatterns) {
+        const descMatch = html.match(pattern);
+        if (descMatch && descMatch[1]) {
+            videoData.description = descMatch[1].replace(/<[^>]*>/g, '').trim();
+            break;
+        }
+    }
+
+    const durationMatch = html.match(/itemprop="duration"\s*content="PT(\d+)M(\d+)?S?"/);
+    if (durationMatch) {
+        videoData.duration = (parseInt(durationMatch[1]) || 0) * 60 + (parseInt(durationMatch[2]) || 0);
+    }
+
+    const viewsMatch = html.match(/"interactionCount"\s*:\s*"?(\d+)"?/);
+    if (viewsMatch) {
+        videoData.views = parseInt(viewsMatch[1]) || 0;
+    }
+
+    const uploadMatch = html.match(/itemprop="uploadDate"\s*content="([^"]+)"/);
+    if (uploadMatch) {
+        try {
+            videoData.uploadDate = Math.floor(new Date(uploadMatch[1]).getTime() / 1000);
+        } catch (e) {}
+    }
+
+    const thumbMatch = html.match(/itemprop="thumbnailUrl"\s*content="([^"]+)"/);
+    if (thumbMatch) {
+        videoData.thumbnail = thumbMatch[1];
+    }
+
+    const ratingMatch = html.match(/(\d+(?:\.\d+)?)\s*%\s*(?:rating|like)/i);
+    if (ratingMatch) {
+        videoData.rating = parseFloat(ratingMatch[1]) / 100;
+    }
+
+    videoData.uploader = extractUploaderFromHtml(html);
+
+    const streamRegex = /stream_url_([0-9a-z]+p?)\s*=\s*['"](https?:\/\/[^'"]+)['"]/gi;
+    let streamMatch;
+    while ((streamMatch = streamRegex.exec(html)) !== null) {
+        let quality = streamMatch[1].toLowerCase();
+        let streamUrl = streamMatch[2];
+        if (streamUrl.includes('\\u002F')) {
+            streamUrl = streamUrl.replace(/\\u002F/g, '/');
+        }
+        if (!quality.endsWith('p') && /^\d+$/.test(quality)) {
+            quality = quality + 'p';
+        }
+        videoData.sources[quality] = streamUrl;
+    }
+
+    const m3u8Match = html.match(/['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/);
+    if (m3u8Match) {
+        videoData.sources['hls'] = m3u8Match[1];
+    }
+
+    if (Object.keys(videoData.sources).length === 0) {
+        const streamKeyMatch = html.match(/data-streamkey\s*=\s*['"]([\w]+)['"]/);
+        if (streamKeyMatch) {
+            const streamKey = streamKeyMatch[1];
+            try {
+                const streamResponse = http.POST(
+                    "https://spankbang.com/api/videos/stream",
+                    "id=" + streamKey + "&data=0",
+                    {
+                        "User-Agent": API_HEADERS["User-Agent"],
+                        "Accept": "application/json, text/plain, */*",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Referer": url,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Origin": "https://spankbang.com"
+                    },
+                    false
+                );
+                
+                if (streamResponse.isOk && streamResponse.body) {
+                    const streamData = JSON.parse(streamResponse.body);
+                    for (const [quality, streamUrl] of Object.entries(streamData)) {
+                        if (streamUrl && typeof streamUrl === 'string' && streamUrl.startsWith('http')) {
+                            let qualityKey = quality.toLowerCase();
+                            if (!qualityKey.endsWith('p') && /^\d+$/.test(qualityKey)) {
+                                qualityKey = qualityKey + 'p';
+                            }
+                            videoData.sources[qualityKey] = streamUrl;
+                        } else if (Array.isArray(streamUrl) && streamUrl.length > 0 && streamUrl[0].startsWith('http')) {
+                            let qualityKey = quality.toLowerCase();
+                            if (!qualityKey.endsWith('p') && /^\d+$/.test(qualityKey)) {
+                                qualityKey = qualityKey + 'p';
+                            }
+                            videoData.sources[qualityKey] = streamUrl[0];
+                        }
+                    }
+                }
+            } catch (e) {
+                log("Stream API request failed: " + e.message);
+            }
+        }
+    }
+
+    return videoData;
+}
+
+function createVideoSources(videoData) {
+    const videoSources = [];
+
+    const qualityOrder = ['4k', '2160p', '1080p', '720p', '480p', '360p', '320p', '240p'];
+    
+    for (const quality of qualityOrder) {
+        if (videoData.sources[quality]) {
+            const qualityKey = quality.replace('p', '');
+            const config = CONFIG.VIDEO_QUALITIES[qualityKey] || CONFIG.VIDEO_QUALITIES[quality] || { width: 854, height: 480 };
+            videoSources.push(new VideoUrlSource({
+                url: videoData.sources[quality],
+                name: quality.toUpperCase(),
+                container: "video/mp4",
+                width: config.width,
+                height: config.height
+            }));
+        }
+    }
+
+    for (const [quality, url] of Object.entries(videoData.sources)) {
+        if (quality === 'hls' || quality === 'm3u8') continue;
+        const alreadyAdded = qualityOrder.includes(quality);
+        if (!alreadyAdded && url && url.startsWith('http')) {
+            const qualityKey = quality.replace('p', '');
+            const config = CONFIG.VIDEO_QUALITIES[qualityKey] || CONFIG.VIDEO_QUALITIES[quality] || { width: 854, height: 480 };
+            videoSources.push(new VideoUrlSource({
+                url: url,
+                name: quality.toUpperCase(),
+                container: "video/mp4",
+                width: config.width,
+                height: config.height
+            }));
+        }
+    }
+
+    if (videoData.sources.hls || videoData.sources.m3u8) {
+        const hlsUrl = videoData.sources.hls || videoData.sources.m3u8;
+        videoSources.push(new HLSSource({
+            url: hlsUrl,
+            name: "HLS (Adaptive)",
+            priority: true
+        }));
+    }
+
+    if (videoSources.length === 0) {
+        throw new ScriptException("No video sources available for this video");
+    }
+
+    return videoSources;
+}
+
+function createThumbnails(thumbnail) {
+    if (!thumbnail) {
+        return new Thumbnails([]);
+    }
+    return new Thumbnails([
+        new Thumbnail(thumbnail, 0)
+    ]);
+}
+
+function createPlatformAuthor(uploader) {
+    const avatar = uploader.avatar || "";
+    const authorUrl = uploader.url || "";
+    
+    return new PlatformAuthorLink(
+        new PlatformID(PLATFORM, uploader.name || "", plugin.config.id),
+        uploader.name || "Unknown",
+        authorUrl,
+        avatar
+    );
+}
+
+function createPlatformVideo(videoData) {
+    return new PlatformVideo({
+        id: new PlatformID(PLATFORM, videoData.id || "", plugin.config.id),
+        name: videoData.title || "Untitled",
+        thumbnails: createThumbnails(videoData.thumbnail),
+        author: createPlatformAuthor(videoData.uploader || {}),
+        datetime: videoData.uploadDate || 0,
+        duration: videoData.duration || 0,
+        viewCount: videoData.views || 0,
+        url: videoData.url || `${CONFIG.EXTERNAL_URL_BASE}/${videoData.id}/video/`,
+        isLive: false
+    });
+}
+
+function createVideoDetails(videoData, url) {
+    const videoSources = createVideoSources(videoData);
+    
+    return new PlatformVideoDetails({
+        id: new PlatformID(PLATFORM, videoData.id || "", plugin.config.id),
+        name: videoData.title || "Untitled",
+        thumbnails: createThumbnails(videoData.thumbnail),
+        author: createPlatformAuthor(videoData.uploader || {}),
+        datetime: videoData.uploadDate || 0,
+        duration: videoData.duration || 0,
+        viewCount: videoData.views || 0,
+        url: url,
+        isLive: false,
+        description: videoData.description || videoData.title || "",
+        video: new VideoSourceDescriptor(videoSources),
+        live: null,
+        subtitles: []
+    });
+}
+
+function cleanVideoTitle(title) {
+    if (!title) return "Unknown";
+    return title
+        .replace(/:\s*Porn\s*$/i, '')
+        .replace(/\s*-\s*SpankBang\s*$/i, '')
+        .replace(/\s*\|\s*SpankBang\s*$/i, '')
+        .trim();
+}
+
+function parseSearchResults(html) {
+    const videos = [];
+    
+    const videoItemRegex = /<div[^>]*class="[^"]*video-item[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
+    const thumbBlockRegex = /<a[^>]*href="\/([a-zA-Z0-9]+)\/video\/([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    
+    let itemMatch;
+    while ((itemMatch = videoItemRegex.exec(html)) !== null) {
+        const block = itemMatch[0];
+        
+        const linkMatch = block.match(/href="\/([a-zA-Z0-9]+)\/video\/([^"]+)"/);
+        if (!linkMatch) continue;
+        
+        const videoId = linkMatch[1];
+        const videoSlug = linkMatch[2];
+        
+        const thumbMatch = block.match(/(?:data-src|src)="(https?:\/\/[^"]+(?:\.jpg|\.jpeg|\.png|\.webp)[^"]*)"/);
+        const thumbnail = thumbMatch ? thumbMatch[1] : "";
+        
+        const titleMatch = block.match(/title="([^"]+)"/);
+        let title = titleMatch ? titleMatch[1] : "Unknown";
+        title = cleanVideoTitle(title);
+        
+        const durationMatch = block.match(/<span[^>]*class="[^"]*(?:l|length|duration)[^"]*"[^>]*>([^<]+)<\/span>/i);
+        const durationStr = durationMatch ? durationMatch[1].trim() : "0:00";
+        
+        const durationAltMatch = block.match(/>(\d+:\d+(?::\d+)?)</);
+        const finalDuration = durationMatch ? durationMatch[1].trim() : (durationAltMatch ? durationAltMatch[1] : "0:00");
+        
+        const viewsMatch = block.match(/<span[^>]*class="[^"]*(?:v|views)[^"]*"[^>]*>([^<]+)<\/span>/i);
+        const viewsAltMatch = block.match(/>([0-9,.]+[KMB]?)\s*<\/span>/i);
+        const viewsStr = viewsMatch ? viewsMatch[1].trim() : (viewsAltMatch ? viewsAltMatch[1] : "0");
+
+        let uploader = { name: "", url: "", avatar: "" };
+        
+        const avatarInBlock = extractAvatarFromHtml(block);
+        
+        const channelPatterns = [
+            /<a[^>]*href="\/([a-z0-9]+)\/channel\/([^"]+)"[^>]*>([^<]+)<\/a>/i,
+            /href="\/([a-z0-9]+)\/channel\/([^"]+)"[^>]*title="([^"]+)"/i,
+            /\[([^\]]+)\]\(\/([a-z0-9]+)\/channel\/([^)]+)\)/i
+        ];
+        
+        for (const pattern of channelPatterns) {
+            const channelMatch = block.match(pattern);
+            if (channelMatch) {
+                if (pattern.toString().includes('\\[')) {
+                    uploader = {
+                        name: channelMatch[1].trim(),
+                        url: `spankbang://channel/${channelMatch[2]}:${channelMatch[3]}`,
+                        avatar: avatarInBlock
+                    };
+                } else {
+                    const shortId = channelMatch[1];
+                    const channelName = channelMatch[2];
+                    const displayName = channelMatch[3] ? channelMatch[3].trim() : channelName.replace(/\+/g, ' ');
+                    uploader = {
+                        name: displayName,
+                        url: `spankbang://channel/${shortId}:${channelName}`,
+                        avatar: avatarInBlock
+                    };
+                }
+                break;
+            }
+        }
+        
+        if (!uploader.name) {
+            const profilePatterns = [
+                /<a[^>]*href="\/profile\/([^"]+)"[^>]*>([^<]+)<\/a>/i,
+                /href="\/profile\/([^"]+)"[^>]*title="([^"]+)"/i
+            ];
+            
+            for (const pattern of profilePatterns) {
+                const profileMatch = block.match(pattern);
+                if (profileMatch) {
+                    const profileName = profileMatch[1];
+                    const displayName = profileMatch[2] ? profileMatch[2].trim() : profileName.replace(/\+/g, ' ');
+                    uploader = {
+                        name: displayName,
+                        url: `spankbang://profile/${profileName}`,
+                        avatar: avatarInBlock
+                    };
+                    break;
+                }
+            }
+        }
+        
+        if (!uploader.name) {
+            const pornstarPatterns = [
+                /<a[^>]*href="\/pornstar\/([^"]+)"[^>]*>([^<]+)<\/a>/i,
+                /href="\/pornstar\/([^"]+)"[^>]*title="([^"]+)"/i
+            ];
+            
+            for (const pattern of pornstarPatterns) {
+                const pornstarMatch = block.match(pattern);
+                if (pornstarMatch) {
+                    const pornstarName = pornstarMatch[1];
+                    const displayName = pornstarMatch[2] ? pornstarMatch[2].trim() : pornstarName.replace(/\+/g, ' ');
+                    uploader = {
+                        name: displayName,
+                        url: `spankbang://profile/pornstar:${pornstarName}`,
+                        avatar: avatarInBlock
+                    };
+                    break;
+                }
+            }
+        }
+        
+        videos.push({
+            id: videoId,
+            title: title,
+            thumbnail: thumbnail,
+            duration: parseDuration(finalDuration),
+            views: parseViewCount(viewsStr),
+            url: `${CONFIG.EXTERNAL_URL_BASE}/${videoId}/video/${videoSlug}`,
+            uploader: uploader
+        });
+    }
+    
+    if (videos.length === 0) {
+        const altVideoRegex = /href="\/([a-zA-Z0-9]+)\/video\/([^"]+)"[^>]*title="([^"]+)"/gi;
+        let altMatch;
+        while ((altMatch = altVideoRegex.exec(html)) !== null) {
+            const videoId = altMatch[1];
+            const videoSlug = altMatch[2];
+            let title = cleanVideoTitle(altMatch[3]);
+            
+            videos.push({
+                id: videoId,
+                title: title,
+                thumbnail: `https://tbi.sb-cd.com/t/${videoId}/1/0/w:300/default.jpg`,
+                duration: 0,
+                views: 0,
+                url: `${CONFIG.EXTERNAL_URL_BASE}/${videoId}/video/${videoSlug}`,
+                uploader: { name: "", url: "", avatar: "" }
+            });
+        }
+    }
+    
+    return videos;
+}
+
+function parseChannelResults(html) {
+    const channels = [];
+    
+    const channelBlockPatterns = [
+        /<div[^>]*class="[^"]*(?:user-item|channel-item|profile-item)[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g,
+        /<a[^>]*href="\/(?:profile|pornstar)\/[^"]+[^>]*>[\s\S]*?<\/a>/g
+    ];
+    
+    for (const pattern of channelBlockPatterns) {
+        let match;
+        while ((match = pattern.exec(html)) !== null) {
+            const block = match[0];
+            
+            const linkMatch = block.match(/href="\/(profile|pornstar)\/([^"]+)"/);
+            if (!linkMatch) continue;
+            
+            const type = linkMatch[1];
+            const profileName = linkMatch[2];
+            const profileId = type === 'pornstar' ? `pornstar:${profileName}` : profileName;
+            
+            const namePatterns = [
+                /<span[^>]*class="[^"]*name[^"]*"[^>]*>([^<]+)<\/span>/,
+                /title="([^"]+)"/,
+                />([^<]+)</
+            ];
+            
+            let name = profileName;
+            for (const namePattern of namePatterns) {
+                const nameMatch = block.match(namePattern);
+                if (nameMatch && nameMatch[1]) {
+                    name = nameMatch[1].trim();
+                    break;
+                }
+            }
+            
+            const avatarMatch = block.match(/(?:data-src|src)="(https?:\/\/[^"]+(?:\.jpg|\.jpeg|\.png|\.gif|\.webp)[^"]*)"/);
+            const avatar = avatarMatch ? avatarMatch[1] : "";
+            
+            const videoCountMatch = block.match(/(\d+)\s*videos?/i);
+            const videoCount = videoCountMatch ? parseInt(videoCountMatch[1]) : 0;
+            
+            const subscriberMatch = block.match(/(\d+(?:[,.\d]*)?)\s*(?:subscribers?|followers?)/i);
+            const subscribers = subscriberMatch ? parseViewCount(subscriberMatch[1]) : 0;
+            
+            channels.push({
+                id: profileId,
+                name: name,
+                avatar: avatar,
+                url: `${CONFIG.EXTERNAL_URL_BASE}/${type}/${profileName}`,
+                videoCount: videoCount,
+                subscribers: subscribers
+            });
+        }
+        
+        if (channels.length > 0) break;
+    }
+    
+    return channels;
+}
+
+function parseComments(html, videoId) {
+    const comments = [];
+    
+    const commentPatterns = [
+        /<div[^>]*class="[^"]*comment[^"]*"[^>]*data-id="(\d+)"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g,
+        /<div[^>]*class="[^"]*comment-item[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g
+    ];
+    
+    for (const pattern of commentPatterns) {
+        let match;
+        while ((match = pattern.exec(html)) !== null) {
+            const block = match[0];
+            
+            const idMatch = block.match(/data-id="(\d+)"/);
+            const commentId = idMatch ? idMatch[1] : `comment_${comments.length}`;
+            
+            const userPatterns = [
+                /<a[^>]*class="[^"]*(?:username|author)[^"]*"[^>]*>([^<]+)<\/a>/,
+                /<span[^>]*class="[^"]*(?:username|author)[^"]*"[^>]*>([^<]+)<\/span>/
+            ];
+            
+            let username = "Anonymous";
+            for (const userPattern of userPatterns) {
+                const userMatch = block.match(userPattern);
+                if (userMatch && userMatch[1]) {
+                    username = userMatch[1].trim();
+                    break;
+                }
+            }
+            
+            const avatarMatch = block.match(/(?:data-src|src)="(https?:\/\/[^"]+(?:\.jpg|\.jpeg|\.png|\.gif|\.webp)[^"]*)"/);
+            const avatar = avatarMatch ? avatarMatch[1] : "";
+            
+            const textPatterns = [
+                /<div[^>]*class="[^"]*(?:comment-text|text|body)[^"]*"[^>]*>([\s\S]*?)<\/div>/,
+                /<p[^>]*class="[^"]*(?:comment-text|text)[^"]*"[^>]*>([\s\S]*?)<\/p>/
+            ];
+            
+            let text = "";
+            for (const textPattern of textPatterns) {
+                const textMatch = block.match(textPattern);
+                if (textMatch && textMatch[1]) {
+                    text = textMatch[1].replace(/<[^>]*>/g, '').trim();
+                    break;
+                }
+            }
+            
+            if (!text) continue;
+            
+            const likesMatch = block.match(/(\d+)\s*(?:likes?|thumbs?\s*up)/i);
+            const likes = likesMatch ? parseInt(likesMatch[1]) : 0;
+            
+            const dateMatch = block.match(/(\d+)\s*(hour|day|week|month|year)s?\s*ago/i);
+            let timestamp = Math.floor(Date.now() / 1000);
+            if (dateMatch) {
+                const num = parseInt(dateMatch[1]);
+                const unit = dateMatch[2].toLowerCase();
+                const multipliers = {
+                    'hour': 3600,
+                    'day': 86400,
+                    'week': 604800,
+                    'month': 2592000,
+                    'year': 31536000
+                };
+                timestamp -= num * (multipliers[unit] || 0);
+            }
+            
+            comments.push({
+                contextUrl: `${CONFIG.EXTERNAL_URL_BASE}/${videoId}/video/`,
+                author: new PlatformAuthorLink(
+                    new PlatformID(PLATFORM, username, plugin.config.id),
+                    username,
+                    "",
+                    avatar
+                ),
+                message: text,
+                rating: new RatingLikes(likes),
+                date: timestamp,
+                replyCount: 0,
+                context: { id: commentId }
+            });
+        }
+        
+        if (comments.length > 0) break;
+    }
+    
+    return comments;
+}
+
+source.enable = function(conf, settings, savedStateStr) {
+    config = conf ?? {};
+    localConfig = config;
+};
+
+source.disable = function() {};
+
+source.saveState = function() {
+    return JSON.stringify({});
+};
+
+source.getHome = function(continuationToken) {
+    try {
+        const page = continuationToken ? parseInt(continuationToken) : 1;
+        const url = `${BASE_URL}/trending_videos/${page}/`;
+        
+        const html = makeRequest(url, API_HEADERS, 'home content');
+        const videos = parseSearchResults(html);
+        const platformVideos = videos.map(v => createPlatformVideo(v));
+        
+        const hasMore = videos.length >= 20;
+        const nextToken = hasMore ? (page + 1).toString() : null;
+        
+        return new SpankBangHomeContentPager(platformVideos, hasMore, { continuationToken: nextToken });
+        
+    } catch (error) {
+        throw new ScriptException("Failed to get home content: " + error.message);
+    }
+};
+
+source.searchSuggestions = function(query) {
+    try {
+        const suggestUrl = `${BASE_URL}/api/search/suggestions?q=${encodeURIComponent(query)}`;
+        const response = http.GET(suggestUrl, API_HEADERS, false);
+        
+        if (response.isOk && response.body) {
+            try {
+                const data = JSON.parse(response.body);
+                if (Array.isArray(data)) {
+                    return data.slice(0, 10);
+                }
+                if (data.suggestions && Array.isArray(data.suggestions)) {
+                    return data.suggestions.slice(0, 10);
+                }
+            } catch (e) {}
+        }
+    } catch (e) {}
+    
+    return [];
+};
+
+source.getSearchCapabilities = function() {
+    return {
+        types: [Type.Feed.Mixed],
+        sorts: [Type.Order.Chronological],
+        filters: []
+    };
+};
+
+source.search = function(query, type, order, filters, continuationToken) {
+    try {
+        if (!query || query.trim().length === 0) {
+            return new SpankBangSearchPager([], false, {
+                query: query,
+                continuationToken: null
+            });
+        }
+        
+        const page = continuationToken ? parseInt(continuationToken) : 1;
+        const searchQuery = encodeURIComponent(query.trim().replace(/\s+/g, '+'));
+        
+        let searchUrl = `${BASE_URL}/s/${searchQuery}/${page}/`;
+        
+        const params = [];
+        
+        if (filters && typeof filters === 'object') {
+            if (filters.duration && filters.duration.length > 0) {
+                const durationVal = filters.duration[0];
+                if (durationVal && durationVal !== "") {
+                    params.push(`d=${durationVal}`);
+                }
+            }
+            if (filters.quality && filters.quality.length > 0) {
+                const qualityVal = filters.quality[0];
+                if (qualityVal && qualityVal !== "") {
+                    params.push(`q=${qualityVal}`);
+                }
+            }
+            if (filters.period && filters.period.length > 0) {
+                const periodVal = filters.period[0];
+                if (periodVal && periodVal !== "") {
+                    params.push(`p=${periodVal}`);
+                }
+            }
+        }
+        
+        if (order === Type.Order.Views) {
+            params.push("o=4");
+        } else if (order === Type.Order.Rating) {
+            params.push("o=5");
+        } else if (order === Type.Order.Chronological) {
+            params.push("o=1");
+        }
+        
+        if (params.length > 0) {
+            searchUrl += "?" + params.join("&");
+        }
+        
+        log("Search URL: " + searchUrl);
+        
+        const html = makeRequest(searchUrl, API_HEADERS, 'search');
+        const videos = parseSearchResults(html);
+        const platformVideos = videos.map(v => createPlatformVideo(v));
+        
+        const hasMore = videos.length >= 20;
+        const nextToken = hasMore ? (page + 1).toString() : null;
+        
+        return new SpankBangSearchPager(platformVideos, hasMore, {
+            query: query,
+            type: type,
+            order: order,
+            filters: filters,
+            continuationToken: nextToken
+        });
+        
+    } catch (error) {
+        throw new ScriptException("Failed to search: " + error.message);
+    }
+};
+
+source.searchChannels = function(query) {
+    try {
+        if (!query || query.trim().length === 0) {
+            return new SpankBangChannelPager([], false, { query: query });
+        }
+        
+        const searchQuery = encodeURIComponent(query.trim());
+        const searchUrl = `${BASE_URL}/pornstars?q=${searchQuery}`;
+        
+        const html = makeRequest(searchUrl, API_HEADERS, 'channel search');
+        const channels = parseChannelResults(html);
+        
+        const platformChannels = channels.map(c => new PlatformChannel({
+            id: new PlatformID(PLATFORM, c.id, plugin.config.id),
+            name: c.name,
+            thumbnail: c.avatar,
+            banner: "",
+            subscribers: c.subscribers,
+            description: "",
+            url: c.url,
+            links: {}
+        }));
+        
+        return new SpankBangChannelPager(platformChannels, false, { query: query });
+        
+    } catch (error) {
+        return new SpankBangChannelPager([], false, { query: query });
+    }
+};
+
+source.isChannelUrl = function(url) {
+    if (!url || typeof url !== 'string') return false;
+    
+    if (REGEX_PATTERNS.urls.channelInternal.test(url)) return true;
+    if (REGEX_PATTERNS.urls.profileInternal.test(url)) return true;
+    
+    if (REGEX_PATTERNS.urls.relativeProfile.test(url)) return true;
+    if (REGEX_PATTERNS.urls.relativeChannel.test(url)) return true;
+    if (REGEX_PATTERNS.urls.relativePornstar.test(url)) return true;
+    
+    if (REGEX_PATTERNS.urls.channelProfile.test(url)) return true;
+    if (REGEX_PATTERNS.urls.channelOfficial.test(url)) return true;
+    if (REGEX_PATTERNS.urls.pornstar.test(url)) return true;
+    
+    return false;
+};
+
+source.getChannel = function(url) {
+    try {
+        const profileId = extractProfileId(url);
+        let profileUrl;
+        let internalUrl;
+        
+        if (profileId.startsWith('pornstar:')) {
+            const name = profileId.replace('pornstar:', '');
+            profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/pornstar/${name}`;
+            internalUrl = `spankbang://profile/${profileId}`;
+        } else if (profileId.startsWith('channel:')) {
+            const channelInfo = profileId.replace('channel:', '');
+            const [shortId, channelName] = channelInfo.split(':');
+            profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/${shortId}/channel/${channelName}`;
+            internalUrl = `spankbang://channel/${channelInfo}`;
+        } else {
+            profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/profile/${profileId}`;
+            internalUrl = `spankbang://profile/${profileId}`;
+        }
+        
+        const html = makeRequest(profileUrl, API_HEADERS, 'channel');
+        
+        const namePatterns = [
+            /<h1[^>]*class="[^"]*name[^"]*"[^>]*>([^<]+)<\/h1>/i,
+            /<h1[^>]*>([^<]+)<\/h1>/,
+            /<title>([^<]+?)(?:\s*-\s*SpankBang)?<\/title>/
+        ];
+        
+        let name = profileId;
+        for (const pattern of namePatterns) {
+            const nameMatch = html.match(pattern);
+            if (nameMatch && nameMatch[1]) {
+                name = nameMatch[1].trim();
+                break;
+            }
+        }
+        
+        const avatarPatterns = [
+            /\!\[.*?\]\((https?:\/\/spankbang\.com\/avatar\/[^)]+)\)/i,
+            /src="(https?:\/\/spankbang\.com\/avatar\/[^"]+)"/i,
+            /<img[^>]*src="(\/avatar\/[^"]+)"/i,
+            /class="[^"]*avatar[^"]*"[^>]*>\s*<img[^>]*src="([^"]+)"/i,
+            /<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="([^"]+)"/i,
+            /<img[^>]*class="[^"]*profile-pic[^"]*"[^>]*src="([^"]+)"/i,
+            /class="[^"]*profile[^"]*"[^>]*>\s*<img[^>]*src="([^"]+)"/i
+        ];
+        
+        let avatar = "";
+        for (const pattern of avatarPatterns) {
+            const avatarMatch = html.match(pattern);
+            if (avatarMatch && avatarMatch[1]) {
+                avatar = avatarMatch[1].startsWith('http') ? avatarMatch[1] : `${CONFIG.EXTERNAL_URL_BASE}${avatarMatch[1]}`;
+                break;
+            }
+        }
+        
+        
+        const bannerPatterns = [
+            /class="[^"]*cover[^"]*"[^>]*style="[^"]*url\(['"]?([^'")\s]+)['"]?\)/,
+            /class="[^"]*banner[^"]*"[^>]*>\s*<img[^>]*src="([^"]+)"/i
+        ];
+        
+        let banner = "";
+        for (const pattern of bannerPatterns) {
+            const bannerMatch = html.match(pattern);
+            if (bannerMatch && bannerMatch[1]) {
+                banner = bannerMatch[1].startsWith('http') ? bannerMatch[1] : `${CONFIG.EXTERNAL_URL_BASE}${bannerMatch[1]}`;
+                break;
+            }
+        }
+        
+        const subscriberPatterns = [
+            /Subscribers:\s*_([^_]+)_/i,
+            /Subscribers:\s*<[^>]*>([^<]+)</i,
+            /<em[^>]*>(\d+[KMB]?)<\/em>/i,
+            />(\d+(?:[,.\d]*)?[KMB]?)\s*<\/em>/i,
+            /(\d+(?:[,.\d]*)?[KMB]?)\s*(?:subscribers?|followers?)/i,
+            /class="[^"]*subscribers[^"]*"[^>]*>([^<]+)</i
+        ];
+        
+        let subscribers = 0;
+        for (const pattern of subscriberPatterns) {
+            const subMatch = html.match(pattern);
+            if (subMatch && subMatch[1]) {
+                const subStr = subMatch[1].replace(/<[^>]*>/g, '').trim();
+                subscribers = parseViewCount(subStr);
+                if (subscribers > 0) break;
+            }
+        }
+        
+        const descPatterns = [
+            /<div[^>]*class="[^"]*(?:bio|about|description)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+            /<p[^>]*class="[^"]*(?:bio|about|description)[^"]*"[^>]*>([\s\S]*?)<\/p>/i
+        ];
+        
+        let description = "";
+        for (const pattern of descPatterns) {
+            const descMatch = html.match(pattern);
+            if (descMatch && descMatch[1]) {
+                description = descMatch[1].replace(/<[^>]*>/g, '').trim();
+                break;
+            }
+        }
+        
+        return new PlatformChannel({
+            id: new PlatformID(PLATFORM, profileId, plugin.config.id),
+            name: name,
+            thumbnail: avatar,
+            banner: banner,
+            subscribers: subscribers,
+            description: description,
+            url: internalUrl,
+            links: {}
+        });
+        
+    } catch (error) {
+        throw new ScriptException("Failed to get channel: " + error.message);
+    }
+};
+
+source.getChannelCapabilities = function() {
+    return {
+        types: [Type.Feed.Mixed],
+        sorts: [Type.Order.Chronological],
+        filters: []
+    };
+};
+
+source.getSearchChannelContentsCapabilities = function() {
+    return {
+        types: [Type.Feed.Mixed],
+        sorts: [Type.Order.Chronological],
+        filters: []
+    };
+};
+
+source.getChannelContents = function(url, type, order, filters, continuationToken) {
+    try {
+        const profileId = extractProfileId(url);
+        const page = continuationToken ? parseInt(continuationToken) : 1;
+        
+        let profileUrl;
+        if (profileId.startsWith('pornstar:')) {
+            const name = profileId.replace('pornstar:', '');
+            if (page > 1) {
+                profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/pornstar/${name}/${page}`;
+            } else {
+                profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/pornstar/${name}`;
+            }
+        } else if (profileId.startsWith('channel:')) {
+            const channelInfo = profileId.replace('channel:', '');
+            const [shortId, channelName] = channelInfo.split(':');
+            if (page > 1) {
+                profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/${shortId}/channel/${channelName}/${page}`;
+            } else {
+                profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/${shortId}/channel/${channelName}`;
+            }
+        } else {
+            if (page > 1) {
+                profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/profile/${profileId}/videos/${page}`;
+            } else {
+                profileUrl = `${CONFIG.EXTERNAL_URL_BASE}/profile/${profileId}/videos`;
+            }
+        }
+        
+        if (order === Type.Order.Views) {
+            profileUrl += (profileUrl.includes('?') ? '&' : '?') + 'o=4';
+        } else if (order === Type.Order.Rating) {
+            profileUrl += (profileUrl.includes('?') ? '&' : '?') + 'o=5';
+        }
+        
+        const html = makeRequest(profileUrl, API_HEADERS, 'channel contents');
+        const videos = parseSearchResults(html);
+        const platformVideos = videos.map(v => createPlatformVideo(v));
+        
+        const hasMore = videos.length >= 20;
+        const nextToken = hasMore ? (page + 1).toString() : null;
+        
+        return new SpankBangChannelContentPager(platformVideos, hasMore, {
+            url: url,
+            type: type,
+            order: order,
+            filters: filters,
+            continuationToken: nextToken
+        });
+        
+    } catch (error) {
+        throw new ScriptException("Failed to get channel contents: " + error.message);
+    }
+};
+
+source.getChannelVideos = function(url, continuationToken) {
+    return source.getChannelContents(url, Type.Feed.Videos, Type.Order.Chronological, [], continuationToken);
+};
+
+source.isContentDetailsUrl = function(url) {
+    if (!url || typeof url !== 'string') return false;
+    
+    return REGEX_PATTERNS.urls.videoStandard.test(url) ||
+           REGEX_PATTERNS.urls.videoAlternative.test(url) ||
+           REGEX_PATTERNS.urls.videoShort.test(url);
+};
+
+source.getContentDetails = function(url) {
+    try {
+        const html = makeRequest(url, API_HEADERS, 'video details');
+        const videoData = parseVideoPage(html, url);
+        return createVideoDetails(videoData, url);
+        
+    } catch (error) {
+        throw new ScriptException("Failed to get video details: " + error.message);
+    }
+};
+
+source.getComments = function(url) {
+    try {
+        const videoId = extractVideoId(url);
+        const commentsUrl = `${BASE_URL}/${videoId}/comments/`;
+        
+        const html = makeRequest(commentsUrl, API_HEADERS, 'comments');
+        const comments = parseComments(html, videoId);
+        
+        const platformComments = comments.map(c => new Comment(c));
+        
+        return new SpankBangCommentPager(platformComments, false, { url: url, videoId: videoId });
+        
+    } catch (error) {
+        return new SpankBangCommentPager([], false, { url: url });
+    }
+};
+
+source.getSubComments = function(comment) {
+    return new SpankBangCommentPager([], false, {});
+};
+
+source.isPlaylistUrl = function(url) {
+    if (!url || typeof url !== 'string') return false;
+    
+    return REGEX_PATTERNS.urls.playlistInternal.test(url) ||
+           REGEX_PATTERNS.urls.categoryInternal.test(url);
+};
+
+source.searchPlaylists = function(query, type, order, filters, continuationToken) {
+    return new SpankBangPlaylistPager([], false, { query: query });
+};
+
+source.getPlaylist = function(url) {
+    try {
+        let searchTerm;
+        
+        const categoryMatch = url.match(REGEX_PATTERNS.urls.categoryInternal);
+        const playlistMatch = url.match(REGEX_PATTERNS.urls.playlistInternal);
+        
+        if (categoryMatch) {
+            searchTerm = categoryMatch[1];
+        } else if (playlistMatch) {
+            searchTerm = playlistMatch[1];
+        } else {
+            throw new ScriptException("Invalid playlist URL format");
+        }
+        
+        const searchUrl = `${BASE_URL}/s/${encodeURIComponent(searchTerm)}/`;
+        const html = makeRequest(searchUrl, API_HEADERS, 'playlist');
+        const videos = parseSearchResults(html);
+        const platformVideos = videos.map(v => createPlatformVideo(v));
+        
+        return new PlatformPlaylistDetails({
+            id: new PlatformID(PLATFORM, searchTerm, plugin.config.id),
+            name: searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1),
+            thumbnail: platformVideos.length > 0 ? platformVideos[0].thumbnails : new Thumbnails([]),
+            author: new PlatformAuthorLink(
+                new PlatformID(PLATFORM, "spankbang", plugin.config.id),
+                "SpankBang",
+                CONFIG.EXTERNAL_URL_BASE,
+                ""
+            ),
+            datetime: 0,
+            url: url,
+            videoCount: platformVideos.length,
+            contents: new SpankBangSearchPager(platformVideos, false, { query: searchTerm })
+        });
+        
+    } catch (error) {
+        throw new ScriptException("Failed to get playlist: " + error.message);
+    }
+};
+
+class SpankBangHomeContentPager extends ContentPager {
+    constructor(results, hasMore, context) {
+        super(results, hasMore, context);
+    }
+    
+    nextPage() {
+        return source.getHome(this.context.continuationToken);
+    }
+}
+
+class SpankBangSearchPager extends ContentPager {
+    constructor(results, hasMore, context) {
+        super(results, hasMore, context);
+    }
+    
+    nextPage() {
+        return source.search(
+            this.context.query,
+            this.context.type,
+            this.context.order,
+            this.context.filters,
+            this.context.continuationToken
+        );
+    }
+}
+
+class SpankBangChannelPager extends ChannelPager {
+    constructor(results, hasMore, context) {
+        super(results, hasMore, context);
+    }
+    
+    nextPage() {
+        return new SpankBangChannelPager([], false, this.context);
+    }
+}
+
+class SpankBangChannelContentPager extends ContentPager {
+    constructor(results, hasMore, context) {
+        super(results, hasMore, context);
+    }
+    
+    nextPage() {
+        return source.getChannelContents(
+            this.context.url,
+            this.context.type,
+            this.context.order,
+            this.context.filters,
+            this.context.continuationToken
+        );
+    }
+}
+
+class SpankBangPlaylistPager extends PlaylistPager {
+    constructor(results, hasMore, context) {
+        super(results, hasMore, context);
+    }
+    
+    nextPage() {
+        return new SpankBangPlaylistPager([], false, this.context);
+    }
+}
+
+class SpankBangCommentPager extends CommentPager {
+    constructor(results, hasMore, context) {
+        super(results, hasMore, context);
+    }
+    
+    nextPage() {
+        return new SpankBangCommentPager([], false, this.context);
+    }
+}
+
+log("SpankBang plugin loaded");
